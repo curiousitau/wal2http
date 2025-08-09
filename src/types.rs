@@ -202,19 +202,4 @@ impl ReplicationConfig {
             feedback_interval_secs: 1, // Send feedback every second
         })
     }
-
-    /// Create a config for testing purposes (less strict validation)
-    #[cfg(test)]
-    pub fn test_config(
-        connection_string: String,
-        publication_name: String,
-        slot_name: String,
-    ) -> Self {
-        Self {
-            connection_string,
-            publication_name,
-            slot_name,
-            feedback_interval_secs: 1,
-        }
-    }
 }

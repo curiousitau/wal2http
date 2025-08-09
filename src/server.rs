@@ -53,8 +53,9 @@ impl ReplicationServer {
     }
 
     fn create_replication_slot(&self) -> Result<()> {
+        // https://www.postgresql.org/docs/14/protocol-replication.html
         let create_slot_sql = format!(
-            "CREATE_REPLICATION_SLOT \"{}\" LOGICAL pgoutput (SNAPSHOT 'nothing');",
+            "CREATE_REPLICATION_SLOT \"{}\" LOGICAL pgoutput NOEXPORT_SNAPSHOT;",
             self.config.slot_name
         );
 
@@ -71,8 +72,16 @@ impl ReplicationServer {
     }
 
     async fn start_replication(&mut self) -> Result<()> {
+        /*
+        proto_version
+            Protocol version. Currently versions 1, 2, 3, and 4 are supported. A valid version is required.
+            Version 2 is supported only for server version 14 and above, and it allows streaming of large in-progress transactions.
+            Version 3 is supported only for server version 15 and above, and it allows streaming of two-phase commits.
+            Version 4 is supported only for server version 16 and above, and it allows streams of large in-progress transactions to be applied in parallel.
+        https://www.postgresql.org/docs/current/protocol-logical-replication.html#PROTOCOL-LOGICAL-REPLICATION-PARAMS
+        */
         let start_replication_sql = format!(
-            "START_REPLICATION SLOT \"{}\" LOGICAL 0/0 (proto_version '3', streaming 'on', publication_names '\"{}\"');",
+            "START_REPLICATION SLOT \"{}\" LOGICAL 0/0 (proto_version '2', streaming 'on', publication_names '\"{}\"');",
             self.config.slot_name,
             self.config.publication_name
         );

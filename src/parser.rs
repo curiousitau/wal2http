@@ -10,6 +10,10 @@ use tracing::{debug, error, warn};
 pub struct MessageParser;
 
 impl MessageParser {
+    /// Parse a WAL message from the given buffer
+    /// Returns a ReplicationMessage on success
+    /// Errors with ReplicationError on failure
+    /// please refer to https://www.postgresql.org/docs/current/protocol-logicalrep-message-formats.html#PROTOCOL-LOGICALREP-MESSAGE-FORMATS
     pub fn parse_wal_message(buffer: &[u8]) -> Result<ReplicationMessage> {
         let mut reader = BufferReader::new(buffer);
         let message_type = reader.skip_message_type()?;

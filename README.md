@@ -42,6 +42,12 @@ A Rust implementation of a PostgreSQL logical replication client that connects t
 
 ## Installation
 
+> [!WARNING]
+> Please note : PostgreSQL DB version must equal or higher to version 14, more information refer to below link. 
+> * https://www.postgresql.org/docs/14/protocol-replication.html
+> * https://www.postgresql.org/docs/current/protocol-logical-replication.html#PROTOCOL-LOGICAL-REPLICATION-PARAMS
+
+
 ### From Source
 
 ```bash
