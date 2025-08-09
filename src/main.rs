@@ -11,6 +11,7 @@ mod types;
 mod parser;
 mod server;
 mod errors;
+mod buffer;
 
 use errors::Result;
 use clap::Parser;

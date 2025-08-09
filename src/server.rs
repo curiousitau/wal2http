@@ -1,9 +1,10 @@
 //! PostgreSQL replication server implementation
 //! Main server that handles connection, replication slot management, and message processing
 
-use crate::types::*;
-use crate::utils::{PGConnection, system_time_to_postgres_timestamp, buf_send_u64, buf_send_i64, buf_recv_u64, INVALID_XLOG_REC_PTR};
+use crate::buffer::{BufferReader, BufferWriter};
 use crate::parser::MessageParser;
+use crate::types::*;
+use crate::utils::{PGConnection, system_time_to_postgres_timestamp, INVALID_XLOG_REC_PTR};
 use crate::errors::Result;
 use tracing::{info, debug, warn, error};
 use std::time::{Instant, Duration};
@@ -121,8 +122,10 @@ impl ReplicationServer {
         
         debug!("Processing keepalive message");
         
-        let offset = 1; // Skip 'k'
-        let log_pos = buf_recv_u64(&data[offset..]);
+        let mut reader = BufferReader::new(data);
+        let _msg_type = reader.skip_message_type()?; // Skip 'k'
+        let log_pos = reader.read_u64()?;
+        
         self.state.update_lsn(log_pos);
         
         self.send_feedback()?;
@@ -134,28 +137,24 @@ impl ReplicationServer {
             return Err(crate::errors::ReplicationError::protocol("WAL message too short"));
         }
         
-        let mut offset = 1; // Skip 'w'
+        let mut reader = BufferReader::new(data);
+        let _msg_type = reader.skip_message_type()?; // Skip 'w'
         
         // Parse WAL message header
-        let data_start = buf_recv_u64(&data[offset..]);
-        offset += 8;
-        
-        let _wal_end = buf_recv_u64(&data[offset..]);
-        offset += 8;
-        
-        let _send_time = crate::utils::buf_recv_i64(&data[offset..]);
-        offset += 8;
+        let data_start = reader.read_u64()?;
+        let _wal_end = reader.read_u64()?;
+        let _send_time = reader.read_i64()?;
         
         if data_start > 0 {
             self.state.update_lsn(data_start);
         }
         
-        if offset >= data.len() {
+        if reader.remaining() == 0 {
             return Err(crate::errors::ReplicationError::protocol("WAL message has no data"));
         }
         
         // Parse the actual logical replication message
-        let message_data = &data[offset..];
+        let message_data = &data[reader.position()..];
         match MessageParser::parse_wal_message(message_data) {
             Ok(message) => {
                 self.process_replication_message(message)?;
@@ -311,26 +310,20 @@ impl ReplicationServer {
         let timestamp = system_time_to_postgres_timestamp(now);
         
         let mut reply_buf = [0u8; 34]; // 1 + 8 + 8 + 8 + 8 + 1
-        let mut offset = 0;
+        let bytes_written = {
+            let mut writer = BufferWriter::new(&mut reply_buf);
+            
+            writer.write_u8(b'r')?;
+            writer.write_u64(self.state.received_lsn)?;        // Received LSN
+            writer.write_u64(self.state.received_lsn)?;        // Flushed LSN (same as received)
+            writer.write_u64(INVALID_XLOG_REC_PTR)?;           // Applied LSN (not tracking)
+            writer.write_i64(timestamp)?;                      // Timestamp
+            writer.write_u8(0)?;                               // Don't request reply
+            
+            writer.bytes_written()
+        };
         
-        reply_buf[offset] = b'r';
-        offset += 1;
-        
-        buf_send_u64(self.state.received_lsn, &mut reply_buf[offset..]);
-        offset += 8;
-        
-        buf_send_u64(self.state.received_lsn, &mut reply_buf[offset..]);
-        offset += 8;
-        
-        buf_send_u64(INVALID_XLOG_REC_PTR, &mut reply_buf[offset..]);
-        offset += 8;
-        
-        buf_send_i64(timestamp, &mut reply_buf[offset..]);
-        offset += 8;
-        
-        reply_buf[offset] = 0; // Don't request reply for now
-        
-        self.connection.put_copy_data(&reply_buf)?;
+        self.connection.put_copy_data(&reply_buf[..bytes_written])?;
         self.connection.flush()?;
         
         debug!("Sent feedback with LSN: {}", self.state.received_lsn);
