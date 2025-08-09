@@ -2,15 +2,17 @@
 //! Contains helper functions for byte manipulation, timestamp conversion, and other utilities
 
 use crate::errors::Result;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use libpq_sys::*;
 use std::ffi::{CStr, CString};
 use std::ptr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // PostgreSQL epoch constants
-const POSTGRES_EPOCH_JDATE: i64 = 2451545; // date2j(2000, 1, 1)
-const UNIX_EPOCH_JDATE: i64 = 2440588; // date2j(1970, 1, 1)
-const SECS_PER_DAY: i64 = 86400;
+const POSTGRES_EPOCH_JDATE: i64 = 2_451_545; // date2j(2000, 1, 1)
+const UNIX_EPOCH_JDATE: i64 = 2_440_588; // date2j(1970, 1, 1)
+const SECS_PER_DAY: i64 = 86_400;
+const PG_EPOCH_OFFSET_SECS: i64 = 946_684_800; // Seconds from 1970 to 2000
 
 // Type aliases to match PostgreSQL types
 pub type XLogRecPtr = u64;
@@ -309,4 +311,23 @@ impl Drop for PGResult {
             unsafe { PQclear(self.result) };
         }
     }
+}
+
+
+/// Convert a microsecond or nanosecond timestamp to a formatted UTC date string.
+///
+/// # Arguments
+/// * `ts` - The timestamp value for microseconds
+///
+/// # Returns
+/// A `String` in "YYYY-MM-DD HH:MM:SS.sss UTC" format.
+pub fn format_timestamp_from_pg(ts: i64) -> String {
+
+    let secs = ts / 1_000_000 + PG_EPOCH_OFFSET_SECS;
+    let nsecs = (ts % 1_000_000) * 1_000;
+    
+    let datetime = DateTime::from_timestamp(secs, nsecs as u32)
+        .expect("Invalid timestamp");
+
+    datetime.format("%Y-%m-%d %H:%M:%S%.3f UTC").to_string()
 }

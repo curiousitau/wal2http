@@ -5,8 +5,8 @@ use crate::buffer::{BufferReader, BufferWriter};
 use crate::errors::Result;
 use crate::parser::MessageParser;
 use crate::types::*;
-use crate::utils::{system_time_to_postgres_timestamp, PGConnection, INVALID_XLOG_REC_PTR};
-use std::time::{Duration, Instant};
+use crate::utils::{format_timestamp_from_pg, system_time_to_postgres_timestamp, PGConnection, INVALID_XLOG_REC_PTR};
+use std::time::{Duration, Instant, SystemTime};
 use tracing::{debug, error, info, warn};
 
 pub struct ReplicationServer {
@@ -105,7 +105,6 @@ impl ReplicationServer {
                 None => {
                     info!("No data received, continuing");
                     tokio::time::sleep(Duration::from_millis(10)).await;
-                    std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
                 Some(data) => {
@@ -201,8 +200,13 @@ impl ReplicationServer {
                 info!("BEGIN: Xid {}", xid);
             }
 
-            ReplicationMessage::Commit { .. } => {
-                info!("COMMIT\n");
+            ReplicationMessage::Commit { 
+                flags,
+                commit_lsn,
+                end_lsn,
+                timestamp,
+             } => {
+                info!("COMMIT: flags: {}, lsn: {}, end_lsn: {}, commit_time: {}", flags, commit_lsn, end_lsn, format_timestamp_from_pg(timestamp));
             }
 
             ReplicationMessage::Relation { relation } => {
@@ -367,7 +371,7 @@ impl ReplicationServer {
             return Ok(());
         }
 
-        let now = std::time::SystemTime::now();
+        let now = SystemTime::now();
         let timestamp = system_time_to_postgres_timestamp(now);
 
         let mut reply_buf = [0u8; 34]; // 1 + 8 + 8 + 8 + 8 + 1
