@@ -10,8 +10,9 @@ mod utils;
 mod types;
 mod parser;
 mod server;
+mod errors;
 
-use anyhow::Result;
+use errors::Result;
 use clap::Parser;
 use tracing::{info, error};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -54,26 +55,11 @@ async fn main() -> Result<()> {
     info!("Publication name: {}", publication_name);
 
     // Parse connection parameters
-    let connection_string = if args.connection_params.is_empty() {
-        error!("No connection parameters provided!");
-        error!("Usage examples:");
-        error!("  {} user postgres password mypass host localhost port 5432 dbname mydb", 
-               env::args().next().unwrap_or_else(|| "pg_replica_rs".to_string()));
-        error!("  {} user=postgres password=mypass host=localhost port=5432 dbname=mydb",
-               env::args().next().unwrap_or_else(|| "pg_replica_rs".to_string()));
-        error!("");
-        error!("Environment variables:");
-        error!("  SlotName={} (replication slot name)", slot_name);
-        error!("  PubName={} (publication name)", publication_name);
-        std::process::exit(1);
-    } else {
-        crate::utils::parse_connection_args(args.connection_params)
-    };
-
+    let connection_string = crate::utils::parse_connection_args(args.connection_params);
     info!("Connection string: {}", connection_string);
 
-    // Create configuration
-    let config = ReplicationConfig::new(connection_string, publication_name, slot_name);
+    // Create configuration with validation
+    let config = ReplicationConfig::new(connection_string, publication_name, slot_name)?;
 
     // Create and run the replication server
     match run_replication_server(config).await {
@@ -93,11 +79,12 @@ async fn run_replication_server(config: ReplicationConfig) -> Result<()> {
     tokio::task::spawn_blocking(move || -> Result<()> {
         let mut server = ReplicationServer::new(config)?;
         
-        server.identify_system()?;
-        server.create_replication_slot_and_start()?;
+        server.identify_system()
+            .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
+        
+        server.create_replication_slot_and_start()
+            .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
         
         Ok(())
-    }).await??;
-    
-    Ok(())
+    }).await?
 }

@@ -2,55 +2,214 @@
 //! Handles parsing of various message types from the replication stream
 
 use crate::types::*;
-use crate::utils::{buf_recv_u64, buf_recv_i64, buf_recv_u32, buf_recv_i32, buf_recv_i16, buf_recv_i8, Oid, Xid, XLogRecPtr, TimestampTz};
-use anyhow::{Result, anyhow};
+use crate::utils::{buf_recv_u64, buf_recv_i64, buf_recv_u32, buf_recv_i32, buf_recv_i16};
+use crate::errors::{Result, ReplicationError};
 use tracing::{debug, warn, error};
+
+/// A buffer reader that manages position and provides meaningful parsing methods
+#[derive(Debug)]
+pub struct BufferReader<'a> {
+    buffer: &'a [u8],
+    position: usize,
+}
+
+impl<'a> BufferReader<'a> {
+    /// Create a new buffer reader from a byte slice
+    pub fn new(buffer: &'a [u8]) -> Self {
+        Self { buffer, position: 0 }
+    }
+
+    /// Get current position in the buffer
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    /// Get remaining bytes in the buffer
+    pub fn remaining(&self) -> usize {
+        if self.position < self.buffer.len() {
+            self.buffer.len() - self.position
+        } else {
+            0
+        }
+    }
+
+    /// Check if we have at least `count` bytes remaining
+    pub fn has_bytes(&self, count: usize) -> bool {
+        self.remaining() >= count
+    }
+
+    /// Skip the message type byte (typically the first byte)
+    pub fn skip_message_type(&mut self) -> Result<char> {
+        if self.buffer.is_empty() {
+            return Err(ReplicationError::parse("Empty buffer"));
+        }
+        let msg_type = self.buffer[0] as char;
+        self.position = 1;
+        Ok(msg_type)
+    }
+
+    /// Read a single byte at current position
+    pub fn read_u8(&mut self) -> Result<u8> {
+        if !self.has_bytes(1) {
+            return Err(ReplicationError::parse("Not enough bytes for u8"));
+        }
+        let value = self.buffer[self.position];
+        self.position += 1;
+        Ok(value)
+    }
+
+    /// Read a 16-bit integer at current position
+    pub fn read_i16(&mut self) -> Result<i16> {
+        if !self.has_bytes(2) {
+            return Err(ReplicationError::parse("Not enough bytes for i16"));
+        }
+        let value = buf_recv_i16(&self.buffer[self.position..]);
+        self.position += 2;
+        Ok(value)
+    }
+
+    /// Read a 32-bit unsigned integer at current position
+    pub fn read_u32(&mut self) -> Result<u32> {
+        if !self.has_bytes(4) {
+            return Err(ReplicationError::parse("Not enough bytes for u32"));
+        }
+        let value = buf_recv_u32(&self.buffer[self.position..]);
+        self.position += 4;
+        Ok(value)
+    }
+
+    /// Read a 32-bit signed integer at current position
+    pub fn read_i32(&mut self) -> Result<i32> {
+        if !self.has_bytes(4) {
+            return Err(ReplicationError::parse("Not enough bytes for i32"));
+        }
+        let value = buf_recv_i32(&self.buffer[self.position..]);
+        self.position += 4;
+        Ok(value)
+    }
+
+    /// Read a 64-bit unsigned integer at current position
+    pub fn read_u64(&mut self) -> Result<u64> {
+        if !self.has_bytes(8) {
+            return Err(ReplicationError::parse("Not enough bytes for u64"));
+        }
+        let value = buf_recv_u64(&self.buffer[self.position..]);
+        self.position += 8;
+        Ok(value)
+    }
+
+    /// Read a 64-bit signed integer at current position
+    pub fn read_i64(&mut self) -> Result<i64> {
+        if !self.has_bytes(8) {
+            return Err(ReplicationError::parse("Not enough bytes for i64"));
+        }
+        let value = buf_recv_i64(&self.buffer[self.position..]);
+        self.position += 8;
+        Ok(value)
+    }
+
+    /// Read a null-terminated string at current position
+    pub fn read_null_terminated_string(&mut self) -> Result<String> {
+        let start_pos = self.position;
+        
+        // Find the null terminator
+        while self.position < self.buffer.len() && self.buffer[self.position] != 0 {
+            self.position += 1;
+        }
+        
+        if self.position >= self.buffer.len() {
+            return Err(ReplicationError::parse("String not null-terminated"));
+        }
+        
+        // Extract the string
+        let string_bytes = &self.buffer[start_pos..self.position];
+        let string_value = String::from_utf8_lossy(string_bytes).into_owned();
+        
+        // Skip the null terminator
+        self.position += 1;
+        
+        Ok(string_value)
+    }
+
+    /// Read a length-prefixed string (32-bit length followed by data)
+    pub fn read_length_prefixed_string(&mut self) -> Result<String> {
+        let length = self.read_i32()?;
+        
+        if length < 0 {
+            return Err(ReplicationError::parse("Negative string length"));
+        }
+        
+        let length = length as usize;
+        if !self.has_bytes(length) {
+            return Err(ReplicationError::parse("String data truncated"));
+        }
+        
+        let string_bytes = &self.buffer[self.position..self.position + length];
+        let string_value = String::from_utf8_lossy(string_bytes).into_owned();
+        
+        self.position += length;
+        Ok(string_value)
+    }
+
+    /// Peek at the next byte without advancing position
+    pub fn peek_u8(&self) -> Result<u8> {
+        if !self.has_bytes(1) {
+            return Err(ReplicationError::parse("No bytes to peek"));
+        }
+        Ok(self.buffer[self.position])
+    }
+
+    /// Set position directly (use with caution)
+    pub fn set_position(&mut self, position: usize) -> Result<()> {
+        if position > self.buffer.len() {
+            return Err(ReplicationError::parse("Position out of bounds"));
+        }
+        self.position = position;
+        Ok(())
+    }
+}
 
 /// Parse logical replication messages from a buffer
 pub struct MessageParser;
 
 impl MessageParser {
     pub fn parse_wal_message(buffer: &[u8]) -> Result<ReplicationMessage> {
-        if buffer.is_empty() {
-            return Err(anyhow!("Empty message buffer"));
-        }
+        let mut reader = BufferReader::new(buffer);
+        let message_type = reader.skip_message_type()?;
         
-        let message_type = buffer[0] as char;
         debug!("Parsing message type: {}", message_type);
         
         match message_type {
-            'B' => Self::parse_begin_message(buffer),
-            'C' => Self::parse_commit_message(buffer),
-            'R' => Self::parse_relation_message(buffer),
-            'I' => Self::parse_insert_message(buffer),
-            'U' => Self::parse_update_message(buffer),
-            'D' => Self::parse_delete_message(buffer),
-            'T' => Self::parse_truncate_message(buffer),
-            'S' => Self::parse_stream_start_message(buffer),
-            'E' => Self::parse_stream_stop_message(buffer),
-            'c' => Self::parse_stream_commit_message(buffer),
-            'A' => Self::parse_stream_abort_message(buffer),
+            'B' => Self::parse_begin_message(&mut reader),
+            'C' => Self::parse_commit_message(&mut reader),
+            'R' => Self::parse_relation_message(&mut reader),
+            'I' => Self::parse_insert_message(&mut reader),
+            'U' => Self::parse_update_message(&mut reader),
+            'D' => Self::parse_delete_message(&mut reader),
+            'T' => Self::parse_truncate_message(&mut reader),
+            'S' => Self::parse_stream_start_message(&mut reader),
+            'E' => Self::parse_stream_stop_message(&mut reader),
+            'c' => Self::parse_stream_commit_message(&mut reader),
+            'A' => Self::parse_stream_abort_message(&mut reader),
             _ => {
                 warn!("Unknown message type: {}", message_type);
-                Err(anyhow!("Unknown message type: {}", message_type))
+                Err(ReplicationError::parse_with_context(
+                    "Unknown message type",
+                    format!("Message type: {}", message_type)
+                ))
             }
         }
     }
     
-    fn parse_begin_message(buffer: &[u8]) -> Result<ReplicationMessage> {
-        if buffer.len() < 21 { // 1 + 8 + 8 + 4
-            return Err(anyhow!("Begin message too short"));
+    fn parse_begin_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+        // BEGIN message: final_lsn (8) + timestamp (8) + xid (4) = 20 bytes + 1 for type
+        if !reader.has_bytes(20) {
+            return Err(ReplicationError::parse("Begin message too short"));
         }
         
-        let mut offset = 1; // Skip 'B'
-        
-        let final_lsn = buf_recv_u64(&buffer[offset..]);
-        offset += 8;
-        
-        let timestamp = buf_recv_i64(&buffer[offset..]);
-        offset += 8;
-        
-        let xid = buf_recv_u32(&buffer[offset..]);
+        let final_lsn = reader.read_u64()?;
+        let timestamp = reader.read_i64()?;
+        let xid = reader.read_u32()?;
         
         Ok(ReplicationMessage::Begin {
             final_lsn,
@@ -59,23 +218,16 @@ impl MessageParser {
         })
     }
     
-    fn parse_commit_message(buffer: &[u8]) -> Result<ReplicationMessage> {
-        if buffer.len() < 26 { // 1 + 1 + 8 + 8 + 8
-            return Err(anyhow!("Commit message too short"));
+    fn parse_commit_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+        // COMMIT message: flags (1) + commit_lsn (8) + end_lsn (8) + timestamp (8) = 25 bytes + 1 for type
+        if !reader.has_bytes(25) {
+            return Err(ReplicationError::parse("Commit message too short"));
         }
         
-        let mut offset = 1; // Skip 'C'
-        
-        let flags = buffer[offset];
-        offset += 1;
-        
-        let commit_lsn = buf_recv_u64(&buffer[offset..]);
-        offset += 8;
-        
-        let end_lsn = buf_recv_u64(&buffer[offset..]);
-        offset += 8;
-        
-        let timestamp = buf_recv_i64(&buffer[offset..]);
+        let flags = reader.read_u8()?;
+        let commit_lsn = reader.read_u64()?;
+        let end_lsn = reader.read_u64()?;
+        let timestamp = reader.read_i64()?;
         
         Ok(ReplicationMessage::Commit {
             flags,
@@ -85,81 +237,31 @@ impl MessageParser {
         })
     }
     
-    fn parse_relation_message(buffer: &[u8]) -> Result<ReplicationMessage> {
-        if buffer.len() < 7 { // Minimum size check
-            return Err(anyhow!("Relation message too short"));
+    fn parse_relation_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+        // RELATION message: oid (4) + namespace (null-terminated) + relation_name (null-terminated) + replica_identity (1) + column_count (2) + columns
+        if !reader.has_bytes(7) { // Minimum: 4 + 1 + 1 + 1 + 2 (oid + empty strings + replica_identity + column_count)
+            return Err(ReplicationError::parse("Relation message too short"));
         }
         
-        let mut offset = 1; // Skip 'R'
+        let oid = reader.read_u32()?;
+        let namespace = reader.read_null_terminated_string()?;
+        let relation_name = reader.read_null_terminated_string()?;
+        let replica_identity = reader.read_u8()? as char;
+        let column_count = reader.read_i16()?;
         
-        let oid = buf_recv_u32(&buffer[offset..]);
-        offset += 4;
-        
-        // Parse namespace (null-terminated string)
-        let namespace_start = offset;
-        while offset < buffer.len() && buffer[offset] != 0 {
-            offset += 1;
-        }
-        if offset >= buffer.len() {
-            return Err(anyhow!("Invalid namespace in relation message"));
-        }
-        let namespace = String::from_utf8_lossy(&buffer[namespace_start..offset]).into_owned();
-        offset += 1; // Skip null terminator
-        
-        // Parse relation name (null-terminated string)
-        let relation_name_start = offset;
-        while offset < buffer.len() && buffer[offset] != 0 {
-            offset += 1;
-        }
-        if offset >= buffer.len() {
-            return Err(anyhow!("Invalid relation name in relation message"));
-        }
-        let relation_name = String::from_utf8_lossy(&buffer[relation_name_start..offset]).into_owned();
-        offset += 1; // Skip null terminator
-        
-        if offset >= buffer.len() {
-            return Err(anyhow!("Relation message truncated"));
-        }
-        
-        let replica_identity = buffer[offset] as char;
-        offset += 1;
-        
-        if offset + 2 > buffer.len() {
-            return Err(anyhow!("Relation message truncated"));
-        }
-        
-        let column_count = buf_recv_i16(&buffer[offset..]);
-        offset += 2;
-        
-        let mut columns = Vec::new();
-        for _ in 0..column_count {
-            if offset >= buffer.len() {
-                return Err(anyhow!("Column data truncated"));
+        let mut columns = Vec::with_capacity(column_count as usize);
+        for i in 0..column_count {
+            if !reader.has_bytes(9) { // Minimum: key_flag (1) + column_name (1) + column_type (4) + atttypmod (4)
+                return Err(ReplicationError::parse_with_context(
+                    "Column data truncated",
+                    format!("Column {} of {}", i + 1, column_count)
+                ));
             }
             
-            let key_flag = buf_recv_i8(&buffer[offset..]);
-            offset += 1;
-            
-            // Parse column name (null-terminated string)
-            let column_name_start = offset;
-            while offset < buffer.len() && buffer[offset] != 0 {
-                offset += 1;
-            }
-            if offset >= buffer.len() {
-                return Err(anyhow!("Invalid column name"));
-            }
-            let column_name = String::from_utf8_lossy(&buffer[column_name_start..offset]).into_owned();
-            offset += 1; // Skip null terminator
-            
-            if offset + 8 > buffer.len() {
-                return Err(anyhow!("Column data truncated"));
-            }
-            
-            let column_type = buf_recv_u32(&buffer[offset..]);
-            offset += 4;
-            
-            let atttypmod = buf_recv_i32(&buffer[offset..]);
-            offset += 4;
+            let key_flag = reader.read_u8()? as i8;
+            let column_name = reader.read_null_terminated_string()?;
+            let column_type = reader.read_u32()?;
+            let atttypmod = reader.read_i32()?;
             
             columns.push(ColumnInfo {
                 key_flag,
@@ -181,32 +283,34 @@ impl MessageParser {
         Ok(ReplicationMessage::Relation { relation })
     }
     
-    fn parse_insert_message(buffer: &[u8]) -> Result<ReplicationMessage> {
-        if buffer.len() < 6 { // Minimum size
-            return Err(anyhow!("Insert message too short"));
+    fn parse_insert_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+        // INSERT message: first u32 could be relation_id or transaction_id depending on streaming
+        if !reader.has_bytes(5) { // Minimum: transaction_id_or_oid (4) + 'N' marker (1)
+            return Err(ReplicationError::parse("Insert message too short"));
         }
         
-        let mut offset = 1; // Skip 'I'
+        let transaction_id_or_oid = reader.read_u32()?;
         
-        let transaction_id_or_oid = buf_recv_u32(&buffer[offset..]);
-        offset += 4;
-        
-        let (relation_id, is_stream, xid) = if offset < buffer.len() && buffer[offset] == b'N' {
+        // Determine if this is a streaming transaction by checking what comes next
+        let (relation_id, is_stream, xid) = if reader.peek_u8()? == b'N' {
             // Not a streaming transaction
             (transaction_id_or_oid, false, None)
         } else {
-            // Streaming transaction
-            let relation_id = buf_recv_u32(&buffer[offset..]);
-            offset += 4;
+            // Streaming transaction: read the actual relation_id
+            let relation_id = reader.read_u32()?;
             (relation_id, true, Some(transaction_id_or_oid))
         };
         
-        if offset >= buffer.len() || buffer[offset] != b'N' {
-            return Err(anyhow!("Expected 'N' marker in insert message"));
+        // Expect 'N' marker for new tuple
+        let marker = reader.read_u8()?;
+        if marker != b'N' {
+            return Err(ReplicationError::parse_with_context(
+                "Expected 'N' marker in insert message",
+                format!("Found: {}", marker as char)
+            ));
         }
-        offset += 1;
         
-        let tuple_data = Self::parse_tuple_data(&buffer[offset..])?;
+        let tuple_data = Self::parse_tuple_data(reader)?;
         
         Ok(ReplicationMessage::Insert {
             relation_id,
@@ -216,51 +320,52 @@ impl MessageParser {
         })
     }
     
-    fn parse_update_message(buffer: &[u8]) -> Result<ReplicationMessage> {
-        if buffer.len() < 6 {
-            return Err(anyhow!("Update message too short"));
+    fn parse_update_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+        // UPDATE message: first u32 could be relation_id or transaction_id depending on streaming
+        if !reader.has_bytes(5) { // Minimum: transaction_id_or_oid (4) + marker (1)
+            return Err(ReplicationError::parse("Update message too short"));
         }
         
-        let mut offset = 1; // Skip 'U'
+        let transaction_id_or_oid = reader.read_u32()?;
         
-        let transaction_id_or_oid = buf_recv_u32(&buffer[offset..]);
-        offset += 4;
-        
-        let (relation_id, is_stream, xid) = if offset < buffer.len() && 
-            (buffer[offset] == b'K' || buffer[offset] == b'O' || buffer[offset] == b'N') {
+        // Check if this is a streaming transaction by examining the next byte
+        let next_byte = reader.peek_u8()?;
+        let (relation_id, is_stream, xid) = if next_byte == b'K' || next_byte == b'O' || next_byte == b'N' {
             // Not a streaming transaction
             (transaction_id_or_oid, false, None)
         } else {
-            // Streaming transaction
-            let relation_id = buf_recv_u32(&buffer[offset..]);
-            offset += 4;
+            // Streaming transaction: read the actual relation_id
+            let relation_id = reader.read_u32()?;
             (relation_id, true, Some(transaction_id_or_oid))
         };
         
-        if offset >= buffer.len() {
-            return Err(anyhow!("Update message truncated"));
-        }
-        
-        let marker = buffer[offset] as char;
-        offset += 1;
+        // Read the tuple marker
+        let marker = reader.read_u8()? as char;
         
         let (key_type, old_tuple_data) = match marker {
             'K' | 'O' => {
-                let tuple_data = Self::parse_tuple_data(&buffer[offset..])?;
-                offset += tuple_data.processed_length;
+                // Parse old tuple data
+                let tuple_data = Self::parse_tuple_data(reader)?;
                 
-                if offset >= buffer.len() || buffer[offset] != b'N' {
-                    return Err(anyhow!("Expected 'N' marker after old tuple data"));
+                // Expect 'N' marker for new tuple data
+                let new_marker = reader.read_u8()?;
+                if new_marker != b'N' {
+                    return Err(ReplicationError::parse_with_context(
+                        "Expected 'N' marker after old tuple data",
+                        format!("Found: {}", new_marker as char)
+                    ));
                 }
-                offset += 1;
                 
                 (Some(marker), Some(tuple_data))
             }
             'N' => (None, None),
-            _ => return Err(anyhow!("Invalid marker in update message: {}", marker)),
+            _ => return Err(ReplicationError::parse_with_context(
+                "Invalid marker in update message", 
+                format!("Marker: {}", marker)
+            )),
         };
         
-        let new_tuple_data = Self::parse_tuple_data(&buffer[offset..])?;
+        let new_tuple_data = Self::parse_tuple_data(reader)?;
         
         Ok(ReplicationMessage::Update {
             relation_id,
@@ -272,37 +377,28 @@ impl MessageParser {
         })
     }
     
-    fn parse_delete_message(buffer: &[u8]) -> Result<ReplicationMessage> {
-        if buffer.len() < 6 {
-            return Err(anyhow!("Delete message too short"));
+    fn parse_delete_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+        // DELETE message: first u32 could be relation_id or transaction_id depending on streaming
+        if !reader.has_bytes(5) { // Minimum: transaction_id_or_oid (4) + key_type (1)
+            return Err(ReplicationError::parse("Delete message too short"));
         }
         
-        let mut offset = 1; // Skip 'D'
+        let transaction_id_or_oid = reader.read_u32()?;
         
-        let transaction_id_or_oid = buf_recv_u32(&buffer[offset..]);
-        offset += 4;
-        
-        let (relation_id, is_stream, xid, key_type) = if offset < buffer.len() && 
-            (buffer[offset] == b'K' || buffer[offset] == b'O') {
+        // Check if this is a streaming transaction by examining the next byte
+        let next_byte = reader.peek_u8()?;
+        let (relation_id, is_stream, xid, key_type) = if next_byte == b'K' || next_byte == b'O' {
             // Not a streaming transaction
-            let key_type = buffer[offset] as char;
-            offset += 1;
+            let key_type = reader.read_u8()? as char;
             (transaction_id_or_oid, false, None, key_type)
         } else {
-            // Streaming transaction
-            let relation_id = buf_recv_u32(&buffer[offset..]);
-            offset += 4;
-            
-            if offset >= buffer.len() {
-                return Err(anyhow!("Delete message truncated"));
-            }
-            let key_type = buffer[offset] as char;
-            offset += 1;
-            
+            // Streaming transaction: read the actual relation_id
+            let relation_id = reader.read_u32()?;
+            let key_type = reader.read_u8()? as char;
             (relation_id, true, Some(transaction_id_or_oid), key_type)
         };
         
-        let tuple_data = Self::parse_tuple_data(&buffer[offset..])?;
+        let tuple_data = Self::parse_tuple_data(reader)?;
         
         Ok(ReplicationMessage::Delete {
             relation_id,
@@ -313,45 +409,40 @@ impl MessageParser {
         })
     }
     
-    fn parse_truncate_message(buffer: &[u8]) -> Result<ReplicationMessage> {
-        if buffer.len() < 10 {
-            return Err(anyhow!("Truncate message too short"));
+    fn parse_truncate_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+        // TRUNCATE message: Complex logic to determine if streaming or not
+        if !reader.has_bytes(9) { // Minimum: first_u32 (4) + second_u32 (4) + flags (1)
+            return Err(ReplicationError::parse("Truncate message too short"));
         }
         
-        let mut offset = 1; // Skip 'T'
+        let first_u32 = reader.read_u32()?;
+        let second_u32 = reader.read_u32()?;
         
-        let xid_or_num_relations = buf_recv_u32(&buffer[offset..]);
-        offset += 4;
+        // Estimate remaining bytes needed based on second_u32 as potential relation count
+        let remaining_bytes = reader.remaining();
+        let expected_for_streaming = 1 + (second_u32 as usize * 4); // flags + relation IDs
         
-        let possible_relation_num = buf_recv_u32(&buffer[offset..]);
-        offset += 4;
-        
-        let remaining = buffer.len() - offset;
-        let expected_size = 1 + (possible_relation_num as usize * 4); // flags + relation IDs
-        
-        let (is_stream, xid, num_relations) = if remaining == expected_size {
-            // Streaming transaction
-            (true, Some(xid_or_num_relations), possible_relation_num)
+        let (is_stream, xid, num_relations) = if remaining_bytes == expected_for_streaming {
+            // Streaming transaction: first_u32 is xid, second_u32 is num_relations
+            (true, Some(first_u32), second_u32)
         } else {
-            // Not a streaming transaction, go back 4 bytes
-            offset -= 4;
-            (false, None, xid_or_num_relations)
+            // Not streaming: first_u32 is num_relations, rewind to read second_u32 as flags later
+            let current_pos = reader.position();
+            reader.set_position(current_pos - 4)?; // Go back 4 bytes to re-read second_u32 as flags
+            (false, None, first_u32)
         };
         
-        if offset >= buffer.len() {
-            return Err(anyhow!("Truncate message truncated"));
-        }
+        let flags = reader.read_u8()? as i8;
         
-        let flags = buf_recv_i8(&buffer[offset..]);
-        offset += 1;
-        
-        let mut relation_ids = Vec::new();
-        for _ in 0..num_relations {
-            if offset + 4 > buffer.len() {
-                return Err(anyhow!("Truncate relation IDs truncated"));
+        let mut relation_ids = Vec::with_capacity(num_relations as usize);
+        for i in 0..num_relations {
+            if !reader.has_bytes(4) {
+                return Err(ReplicationError::parse_with_context(
+                    "Truncate relation IDs truncated",
+                    format!("Relation {} of {}", i + 1, num_relations)
+                ));
             }
-            let relation_id = buf_recv_u32(&buffer[offset..]);
-            offset += 4;
+            let relation_id = reader.read_u32()?;
             relation_ids.push(relation_id);
         }
         
@@ -363,18 +454,16 @@ impl MessageParser {
         })
     }
     
-    fn parse_stream_start_message(buffer: &[u8]) -> Result<ReplicationMessage> {
-        if buffer.len() < 6 {
-            return Err(anyhow!("Stream start message too short"));
+    fn parse_stream_start_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+        // STREAM START message: xid (4) + optional first_segment (1)
+        if !reader.has_bytes(4) {
+            return Err(ReplicationError::parse("Stream start message too short"));
         }
         
-        let mut offset = 1; // Skip 'S'
+        let xid = reader.read_u32()?;
         
-        let xid = buf_recv_u32(&buffer[offset..]);
-        offset += 4;
-        
-        let first_segment = if offset < buffer.len() {
-            buffer[offset] == 1
+        let first_segment = if reader.has_bytes(1) {
+            reader.read_u8()? == 1
         } else {
             false
         };
@@ -382,30 +471,22 @@ impl MessageParser {
         Ok(ReplicationMessage::StreamStart { xid, first_segment })
     }
     
-    fn parse_stream_stop_message(_buffer: &[u8]) -> Result<ReplicationMessage> {
+    fn parse_stream_stop_message(_reader: &mut BufferReader) -> Result<ReplicationMessage> {
+        // STREAM STOP message has no additional data
         Ok(ReplicationMessage::StreamStop)
     }
     
-    fn parse_stream_commit_message(buffer: &[u8]) -> Result<ReplicationMessage> {
-        if buffer.len() < 26 {
-            return Err(anyhow!("Stream commit message too short"));
+    fn parse_stream_commit_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+        // STREAM COMMIT message: xid (4) + flags (1) + commit_lsn (8) + end_lsn (8) + timestamp (8) = 29 bytes
+        if !reader.has_bytes(29) {
+            return Err(ReplicationError::parse("Stream commit message too short"));
         }
         
-        let mut offset = 1; // Skip 'c'
-        
-        let xid = buf_recv_u32(&buffer[offset..]);
-        offset += 4;
-        
-        let flags = buffer[offset];
-        offset += 1;
-        
-        let commit_lsn = buf_recv_u64(&buffer[offset..]);
-        offset += 8;
-        
-        let end_lsn = buf_recv_u64(&buffer[offset..]);
-        offset += 8;
-        
-        let timestamp = buf_recv_i64(&buffer[offset..]);
+        let xid = reader.read_u32()?;
+        let flags = reader.read_u8()?;
+        let commit_lsn = reader.read_u64()?;
+        let end_lsn = reader.read_u64()?;
+        let timestamp = reader.read_i64()?;
         
         Ok(ReplicationMessage::StreamCommit {
             xid,
@@ -416,17 +497,14 @@ impl MessageParser {
         })
     }
     
-    fn parse_stream_abort_message(buffer: &[u8]) -> Result<ReplicationMessage> {
-        if buffer.len() < 9 {
-            return Err(anyhow!("Stream abort message too short"));
+    fn parse_stream_abort_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+        // STREAM ABORT message: xid (4) + subtransaction_xid (4) = 8 bytes
+        if !reader.has_bytes(8) {
+            return Err(ReplicationError::parse("Stream abort message too short"));
         }
         
-        let mut offset = 1; // Skip 'A'
-        
-        let xid = buf_recv_u32(&buffer[offset..]);
-        offset += 4;
-        
-        let subtransaction_xid = buf_recv_u32(&buffer[offset..]);
+        let xid = reader.read_u32()?;
+        let subtransaction_xid = reader.read_u32()?;
         
         Ok(ReplicationMessage::StreamAbort {
             xid,
@@ -434,32 +512,38 @@ impl MessageParser {
         })
     }
     
-    fn parse_tuple_data(buffer: &[u8]) -> Result<TupleData> {
-        if buffer.len() < 2 {
-            return Err(anyhow!("Tuple data too short"));
+    fn parse_tuple_data(reader: &mut BufferReader) -> Result<TupleData> {
+        // TUPLE DATA: column_count (2) + columns
+        if !reader.has_bytes(2) {
+            return Err(ReplicationError::parse("Tuple data too short"));
         }
         
-        let mut offset = 0;
-        let column_count = buf_recv_i16(&buffer[offset..]);
-        offset += 2;
+        let start_position = reader.position();
+        let column_count = reader.read_i16()?;
         
-        let mut columns = Vec::new();
+        let mut columns = Vec::with_capacity(column_count as usize);
         
-        for _ in 0..column_count {
-            if offset >= buffer.len() {
-                return Err(anyhow!("Tuple data truncated"));
+        for i in 0..column_count {
+            if !reader.has_bytes(1) {
+                return Err(ReplicationError::parse_with_context(
+                    "Tuple data truncated",
+                    format!("Column {} of {}", i + 1, column_count)
+                ));
             }
             
-            let data_type = buffer[offset] as char;
-            offset += 1;
+            let data_type = reader.read_u8()? as char;
             
             let column_data = match data_type {
-                'n' => ColumnData {
-                    data_type: 'n',
-                    length: 0,
-                    data: String::new(),
+                'n' => {
+                    // NULL value
+                    ColumnData {
+                        data_type: 'n',
+                        length: 0,
+                        data: String::new(),
+                    }
                 },
                 'u' => {
+                    // Unchanged TOAST value
                     debug!("Unchanged TOAST value encountered");
                     ColumnData {
                         data_type: 'u',
@@ -468,39 +552,32 @@ impl MessageParser {
                     }
                 },
                 't' => {
-                    if offset + 4 > buffer.len() {
-                        return Err(anyhow!("Text data length truncated"));
-                    }
-                    
-                    let text_len = buf_recv_i32(&buffer[offset..]);
-                    offset += 4;
-                    
-                    if offset + text_len as usize > buffer.len() {
-                        return Err(anyhow!("Text data truncated"));
-                    }
-                    
-                    let text_data = String::from_utf8_lossy(&buffer[offset..offset + text_len as usize]).into_owned();
-                    offset += text_len as usize;
-                    
+                    // Text data with length prefix
+                    let text_data = reader.read_length_prefixed_string()?;
                     ColumnData {
                         data_type: 't',
-                        length: text_len,
+                        length: text_data.len() as i32,
                         data: text_data,
                     }
                 },
                 _ => {
                     error!("Unknown tuple data type: {}", data_type);
-                    return Err(anyhow!("Unknown tuple data type: {}", data_type));
+                    return Err(ReplicationError::parse_with_context(
+                        "Unknown tuple data type", 
+                        format!("Data type: {}", data_type)
+                    ));
                 }
             };
             
             columns.push(column_data);
         }
         
+        let processed_length = reader.position() - start_position;
+        
         Ok(TupleData {
             column_count,
             columns,
-            processed_length: offset,
+            processed_length,
         })
     }
 }

@@ -2,6 +2,8 @@
 
 A Rust implementation of a PostgreSQL logical replication client that connects to a database, creates replication slots, and displays changes in real-time. This is a Rust port of the original C++ implementation from [https://github.com/fkfk000/replication_checker](https://github.com/fkfk000/replication_checker).
 
+>　https://www.postgresql.org/docs/current/protocol-replication.html
+
 ## Features
 
 - **Logical Replication**: Connects to PostgreSQL as a replication client using the logical replication protocol
@@ -190,6 +192,13 @@ The implementation consists of several key modules:
 
 1. **No data received**: Check that your publication includes the tables being modified
 2. **"Unknown relation"**: The replication stream may be out of sync; restart the application
+
+### docker Build and run:
+
+```bash
+docker build -t pg_replica_rs .
+docker run -e SlotName=my_slot -e PubName=my_pub pg_replica_rs user postgres password secret host host.docker.internal port 5432 dbname mydb
+```
 
 ## License
 

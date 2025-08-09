@@ -2,10 +2,9 @@
 //! Contains helper functions for byte manipulation, timestamp conversion, and other utilities
 
 use libpq_sys::*;
-use tracing::info;
 use std::ffi::{CStr, CString};
 use std::ptr;
-use anyhow::{Result, anyhow};
+use crate::errors::Result;
 use std::time::{SystemTime, Duration, UNIX_EPOCH};
 
 // PostgreSQL epoch constants
@@ -52,38 +51,34 @@ where
 /// Specialized function for reading network byte order integers
 pub fn buf_recv_u16(buf: &[u8]) -> u16 {
     assert!(buf.len() >= 2);
-    u16::from_be_bytes([buf[0], buf[1]])
+    u16::from_be_bytes(buf[..2].try_into().unwrap())
 }
 
 pub fn buf_recv_u32(buf: &[u8]) -> u32 {
     assert!(buf.len() >= 4);
-    u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]])
+    u32::from_be_bytes(buf[..4].try_into().unwrap())
 }
 
 pub fn buf_recv_u64(buf: &[u8]) -> u64 {
     assert!(buf.len() >= 8);
-    u64::from_be_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])
+    u64::from_be_bytes(buf[..8].try_into().unwrap())
 }
 
 pub fn buf_recv_i16(buf: &[u8]) -> i16 {
     assert!(buf.len() >= 2);
-    i16::from_be_bytes([buf[0], buf[1]])
+    i16::from_be_bytes(buf[..2].try_into().unwrap())
 }
 
 pub fn buf_recv_i32(buf: &[u8]) -> i32 {
     assert!(buf.len() >= 4);
-    i32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]])
+    i32::from_be_bytes(buf[..4].try_into().unwrap())
 }
 
 pub fn buf_recv_i64(buf: &[u8]) -> i64 {
     assert!(buf.len() >= 8);
-    i64::from_be_bytes([buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]])
+    i64::from_be_bytes(buf[..8].try_into().unwrap())
 }
 
-pub fn buf_recv_i8(buf: &[u8]) -> i8 {
-    assert!(!buf.is_empty());
-    buf[0] as i8
-}
 
 /// Write a value to buffer with proper endianness handling
 pub fn buf_send<T>(val: T, buf: &mut [u8])
@@ -172,7 +167,9 @@ impl PGConnection {
         let conn = unsafe { PQconnectdb(c_conninfo.as_ptr()) };
         
         if conn.is_null() {
-            return Err(anyhow!("Failed to allocate connection object"));
+            return Err(crate::errors::ReplicationError::connection(
+                "Failed to allocate connection object"
+            ));
         }
         
         let status = unsafe { PQstatus(conn) };
@@ -186,14 +183,12 @@ impl PGConnection {
                 }
             };
             unsafe { PQfinish(conn) };
-            return Err(anyhow!("Connection failed: {}", error_msg));
+            return Err(crate::errors::ReplicationError::connection(
+                format!("Connection failed: {}", error_msg)
+            ));
         }
         
         Ok(Self { conn })
-    }
-    
-    pub fn as_ptr(&self) -> *mut PGconn {
-        self.conn
     }
     
     pub fn exec(&self, query: &str) -> Result<PGResult> {
@@ -201,7 +196,7 @@ impl PGConnection {
         let result = unsafe { PQexec(self.conn, c_query.as_ptr()) };
         
         if result.is_null() {
-            return Err(anyhow!("Query execution failed"));
+            return Err(crate::errors::ReplicationError::protocol("Query execution failed"));
         }
         
         Ok(PGResult { result })
@@ -212,12 +207,12 @@ impl PGConnection {
         let result = unsafe { PQgetCopyData(self.conn, &mut buffer, timeout) };
 
         match result {
-            -2 => Err(anyhow!("Copy operation failed")),
+            -2 => Err(crate::errors::ReplicationError::protocol("Copy operation failed")),
             -1 => Ok(None), // No more data
             0 => Ok(None),  // Timeout or no data available
             len => {
                 if buffer.is_null() {
-                    return Err(anyhow!("Received null buffer"));
+                    return Err(crate::errors::ReplicationError::buffer("Received null buffer"));
                 }
                 
                 let data = unsafe {
@@ -236,7 +231,7 @@ impl PGConnection {
         };
         
         if result != 1 {
-            return Err(anyhow!("Failed to send copy data"));
+            return Err(crate::errors::ReplicationError::protocol("Failed to send copy data"));
         }
         
         Ok(())
@@ -245,7 +240,7 @@ impl PGConnection {
     pub fn flush(&self) -> Result<()> {
         let result = unsafe { PQflush(self.conn) };
         if result != 0 {
-            return Err(anyhow!("Failed to flush connection"));
+            return Err(crate::errors::ReplicationError::protocol("Failed to flush connection"));
         }
         Ok(())
     }
@@ -301,8 +296,3 @@ impl Drop for PGResult {
     }
 }
 
-// Make types Send and Sync for use in async contexts
-unsafe impl Send for PGConnection {}
-unsafe impl Sync for PGConnection {}
-unsafe impl Send for PGResult {}
-unsafe impl Sync for PGResult {}

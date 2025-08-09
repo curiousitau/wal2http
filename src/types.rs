@@ -3,6 +3,7 @@
 
 use crate::utils::{Oid, Xid};
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// Information about a table column
 #[derive(Debug, Clone)]
@@ -142,7 +143,7 @@ impl Default for ReplicationState {
     }
 }
 
-/// Configuration for the replication checker
+/// Configuration for the replication checker with validation
 #[derive(Debug, Clone)]
 pub struct ReplicationConfig {
     pub connection_string: String,
@@ -152,12 +153,50 @@ pub struct ReplicationConfig {
 }
 
 impl ReplicationConfig {
-    pub fn new(connection_string: String, publication_name: String, slot_name: String) -> Self {
-        Self {
+    /// Create a new ReplicationConfig with validation
+    pub fn new(connection_string: String, publication_name: String, slot_name: String) -> crate::errors::Result<Self> {
+        // Basic validation
+        if connection_string.trim().is_empty() {
+            return Err(crate::errors::ReplicationError::config("Connection string cannot be empty"));
+        }
+        
+        if publication_name.trim().is_empty() {
+            return Err(crate::errors::ReplicationError::config("Publication name cannot be empty"));
+        }
+        
+        if slot_name.trim().is_empty() {
+            return Err(crate::errors::ReplicationError::config("Slot name cannot be empty"));
+        }
+        
+        // Validate slot name format (PostgreSQL naming rules)
+        if !slot_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Err(crate::errors::ReplicationError::config(
+                "Slot name can only contain alphanumeric characters and underscores"
+            ));
+        }
+        
+        if slot_name.len() > 63 { // PostgreSQL identifier length limit
+            return Err(crate::errors::ReplicationError::config(
+                "Slot name cannot be longer than 63 characters"
+            ));
+        }
+        
+        Ok(Self {
             connection_string,
             publication_name,
             slot_name,
             feedback_interval_secs: 1, // Send feedback every second
+        })
+    }
+    
+    /// Create a config for testing purposes (less strict validation)
+    #[cfg(test)]
+    pub fn test_config(connection_string: String, publication_name: String, slot_name: String) -> Self {
+        Self {
+            connection_string,
+            publication_name,
+            slot_name,
+            feedback_interval_secs: 1,
         }
     }
 }

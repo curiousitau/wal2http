@@ -4,7 +4,7 @@
 use crate::types::*;
 use crate::utils::{PGConnection, system_time_to_postgres_timestamp, buf_send_u64, buf_send_i64, buf_recv_u64, INVALID_XLOG_REC_PTR};
 use crate::parser::MessageParser;
-use anyhow::{Result, anyhow};
+use crate::errors::Result;
 use tracing::{info, debug, warn, error};
 use std::time::{Instant, Duration};
 
@@ -34,7 +34,9 @@ impl ReplicationServer {
                 info!("IDENTIFY_SYSTEM succeeded: {:?}", result.status());
             }
             Err(err) => {
-                return Err(anyhow!("IDENTIFY_SYSTEM failed: {}", err));
+                return Err(crate::errors::ReplicationError::protocol(
+                    format!("IDENTIFY_SYSTEM failed: {}", err)
+                ));
             }
         }
         
@@ -114,7 +116,7 @@ impl ReplicationServer {
     
     fn process_keepalive_message(&mut self, data: &[u8]) -> Result<()> {
         if data.len() < 18 { // 'k' + 8 bytes LSN + 8 bytes timestamp + 1 byte reply flag
-            return Err(anyhow!("Keepalive message too short"));
+            return Err(crate::errors::ReplicationError::protocol("Keepalive message too short"));
         }
         
         debug!("Processing keepalive message");
@@ -129,7 +131,7 @@ impl ReplicationServer {
     
     fn process_wal_message(&mut self, data: &[u8]) -> Result<()> {
         if data.len() < 25 { // 'w' + 8 + 8 + 8 + at least 1 byte data
-            return Err(anyhow!("WAL message too short"));
+            return Err(crate::errors::ReplicationError::protocol("WAL message too short"));
         }
         
         let mut offset = 1; // Skip 'w'
@@ -149,7 +151,7 @@ impl ReplicationServer {
         }
         
         if offset >= data.len() {
-            return Err(anyhow!("WAL message has no data"));
+            return Err(crate::errors::ReplicationError::protocol("WAL message has no data"));
         }
         
         // Parse the actual logical replication message
