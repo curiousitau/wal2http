@@ -8,7 +8,10 @@ use thiserror::Error;
 pub enum ReplicationError {
     /// Database connection related errors
     #[error("Database connection error: {message}")]
-    Connection { message: String, source: Option<Box<dyn std::error::Error + Send + Sync>> },
+    Connection {
+        message: String,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
 
     /// Configuration related errors
     #[error("Configuration error: {message}")]
@@ -16,11 +19,17 @@ pub enum ReplicationError {
 
     /// Message parsing errors
     #[error("Message parsing error: {message}")]
-    MessageParsing { message: String, context: Option<String> },
+    MessageParsing {
+        message: String,
+        context: Option<String>,
+    },
 
     /// Protocol errors
     #[error("Protocol error: {message}")]
-    Protocol { message: String, context: Option<String> },
+    Protocol {
+        message: String,
+        context: Option<String>,
+    },
 
     /// Buffer operation errors
     #[error("Buffer operation error: {message}")]
@@ -104,6 +113,4 @@ impl ReplicationError {
             message: message.into(),
         }
     }
-
 }
-

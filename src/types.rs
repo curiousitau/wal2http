@@ -121,15 +121,15 @@ impl ReplicationState {
             last_feedback_time: std::time::Instant::now(),
         }
     }
-    
+
     pub fn add_relation(&mut self, relation: RelationInfo) {
         self.relations.insert(relation.oid, relation);
     }
-    
+
     pub fn get_relation(&self, oid: Oid) -> Option<&RelationInfo> {
         self.relations.get(&oid)
     }
-    
+
     pub fn update_lsn(&mut self, lsn: u64) {
         if lsn > 0 {
             self.received_lsn = std::cmp::max(self.received_lsn, lsn);
@@ -154,33 +154,47 @@ pub struct ReplicationConfig {
 
 impl ReplicationConfig {
     /// Create a new ReplicationConfig with validation
-    pub fn new(connection_string: String, publication_name: String, slot_name: String) -> crate::errors::Result<Self> {
+    pub fn new(
+        connection_string: String,
+        publication_name: String,
+        slot_name: String,
+    ) -> crate::errors::Result<Self> {
         // Basic validation
         if connection_string.trim().is_empty() {
-            return Err(crate::errors::ReplicationError::config("Connection string cannot be empty"));
+            return Err(crate::errors::ReplicationError::config(
+                "Connection string cannot be empty",
+            ));
         }
-        
+
         if publication_name.trim().is_empty() {
-            return Err(crate::errors::ReplicationError::config("Publication name cannot be empty"));
+            return Err(crate::errors::ReplicationError::config(
+                "Publication name cannot be empty",
+            ));
         }
-        
+
         if slot_name.trim().is_empty() {
-            return Err(crate::errors::ReplicationError::config("Slot name cannot be empty"));
+            return Err(crate::errors::ReplicationError::config(
+                "Slot name cannot be empty",
+            ));
         }
-        
+
         // Validate slot name format (PostgreSQL naming rules)
-        if !slot_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        if !slot_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
             return Err(crate::errors::ReplicationError::config(
-                "Slot name can only contain alphanumeric characters and underscores"
+                "Slot name can only contain alphanumeric characters and underscores",
             ));
         }
-        
-        if slot_name.len() > 63 { // PostgreSQL identifier length limit
+
+        if slot_name.len() > 63 {
+            // PostgreSQL identifier length limit
             return Err(crate::errors::ReplicationError::config(
-                "Slot name cannot be longer than 63 characters"
+                "Slot name cannot be longer than 63 characters",
             ));
         }
-        
+
         Ok(Self {
             connection_string,
             publication_name,
@@ -188,10 +202,14 @@ impl ReplicationConfig {
             feedback_interval_secs: 1, // Send feedback every second
         })
     }
-    
+
     /// Create a config for testing purposes (less strict validation)
     #[cfg(test)]
-    pub fn test_config(connection_string: String, publication_name: String, slot_name: String) -> Self {
+    pub fn test_config(
+        connection_string: String,
+        publication_name: String,
+        slot_name: String,
+    ) -> Self {
         Self {
             connection_string,
             publication_name,

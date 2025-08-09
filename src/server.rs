@@ -2,12 +2,12 @@
 //! Main server that handles connection, replication slot management, and message processing
 
 use crate::buffer::{BufferReader, BufferWriter};
+use crate::errors::Result;
 use crate::parser::MessageParser;
 use crate::types::*;
-use crate::utils::{PGConnection, system_time_to_postgres_timestamp, INVALID_XLOG_REC_PTR};
-use crate::errors::Result;
-use tracing::{info, debug, warn, error};
-use std::time::{Instant, Duration};
+use crate::utils::{system_time_to_postgres_timestamp, PGConnection, INVALID_XLOG_REC_PTR};
+use std::time::{Duration, Instant};
+use tracing::{debug, error, info, warn};
 
 pub struct ReplicationServer {
     connection: PGConnection,
@@ -20,14 +20,14 @@ impl ReplicationServer {
         info!("Connecting to database: {}", config.connection_string);
         let connection = PGConnection::connect(&config.connection_string)?;
         info!("Successfully connected to database server");
-        
+
         Ok(Self {
             connection,
             config,
             state: ReplicationState::new(),
         })
     }
-    
+
     pub fn identify_system(&self) -> Result<()> {
         debug!("Identifying system");
         match self.connection.exec("IDENTIFY_SYSTEM") {
@@ -35,62 +35,67 @@ impl ReplicationServer {
                 info!("IDENTIFY_SYSTEM succeeded: {:?}", result.status());
             }
             Err(err) => {
-                return Err(crate::errors::ReplicationError::protocol(
-                    format!("IDENTIFY_SYSTEM failed: {}", err)
-                ));
+                return Err(crate::errors::ReplicationError::protocol(format!(
+                    "IDENTIFY_SYSTEM failed: {}",
+                    err
+                )));
             }
         }
-        
+
         info!("System identification successful");
         Ok(())
     }
-    
-    pub fn create_replication_slot_and_start(&mut self) -> Result<()> {
+
+    pub async fn create_replication_slot_and_start(&mut self) -> Result<()> {
         self.create_replication_slot()?;
-        self.start_replication()?;
+        self.start_replication().await?;
         Ok(())
     }
-    
+
     fn create_replication_slot(&self) -> Result<()> {
         let create_slot_sql = format!(
             "CREATE_REPLICATION_SLOT \"{}\" LOGICAL pgoutput (SNAPSHOT 'nothing');",
             self.config.slot_name
         );
-        
+
         info!("Creating replication slot: {}", self.config.slot_name);
         let result = self.connection.exec(&create_slot_sql)?;
-        
+
         if !result.is_ok() {
             warn!("Replication slot creation may have failed, but continuing");
         } else {
             info!("Replication slot created successfully");
         }
-        
+
         Ok(())
     }
-    
-    fn start_replication(&mut self) -> Result<()> {
+
+    async fn start_replication(&mut self) -> Result<()> {
         let start_replication_sql = format!(
             "START_REPLICATION SLOT \"{}\" LOGICAL 0/0 (proto_version '3', streaming 'on', publication_names '\"{}\"');",
             self.config.slot_name,
             self.config.publication_name
         );
-        
-        info!("Starting replication with publication: {}, SQL:{}", self.config.publication_name,start_replication_sql);
+
+        info!(
+            "Starting replication with publication: {}, SQL:{}",
+            self.config.publication_name, start_replication_sql
+        );
         let _result = self.connection.exec(&start_replication_sql)?;
-        
+
         info!("Started receiving data from database server");
-        self.replication_loop()?;
+        self.replication_loop().await?;
         Ok(())
     }
-    
-    fn replication_loop(&mut self) -> Result<()> {
+
+    async fn replication_loop(&mut self) -> Result<()> {
         loop {
             self.check_and_send_feedback()?;
-            
+
             match self.connection.get_copy_data(0)? {
                 None => {
                     info!("No data received, continuing");
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
@@ -98,7 +103,11 @@ impl ReplicationServer {
                     if data.is_empty() {
                         continue;
                     }
-                    debug!("PQgetCopyData returned: {}, data len: {}",data[0] as char, data.len());
+                    debug!(
+                        "PQgetCopyData returned: {}, data len: {}",
+                        data[0] as char,
+                        data.len()
+                    );
                     match data[0] as char {
                         'k' => {
                             self.process_keepalive_message(&data)?;
@@ -114,45 +123,53 @@ impl ReplicationServer {
             }
         }
     }
-    
+
     fn process_keepalive_message(&mut self, data: &[u8]) -> Result<()> {
-        if data.len() < 18 { // 'k' + 8 bytes LSN + 8 bytes timestamp + 1 byte reply flag
-            return Err(crate::errors::ReplicationError::protocol("Keepalive message too short"));
+        if data.len() < 18 {
+            // 'k' + 8 bytes LSN + 8 bytes timestamp + 1 byte reply flag
+            return Err(crate::errors::ReplicationError::protocol(
+                "Keepalive message too short",
+            ));
         }
-        
+
         debug!("Processing keepalive message");
-        
+
         let mut reader = BufferReader::new(data);
         let _msg_type = reader.skip_message_type()?; // Skip 'k'
         let log_pos = reader.read_u64()?;
-        
+
         self.state.update_lsn(log_pos);
-        
+
         self.send_feedback()?;
         Ok(())
     }
-    
+
     fn process_wal_message(&mut self, data: &[u8]) -> Result<()> {
-        if data.len() < 25 { // 'w' + 8 + 8 + 8 + at least 1 byte data
-            return Err(crate::errors::ReplicationError::protocol("WAL message too short"));
+        if data.len() < 25 {
+            // 'w' + 8 + 8 + 8 + at least 1 byte data
+            return Err(crate::errors::ReplicationError::protocol(
+                "WAL message too short",
+            ));
         }
-        
+
         let mut reader = BufferReader::new(data);
         let _msg_type = reader.skip_message_type()?; // Skip 'w'
-        
+
         // Parse WAL message header
         let data_start = reader.read_u64()?;
         let _wal_end = reader.read_u64()?;
         let _send_time = reader.read_i64()?;
-        
+
         if data_start > 0 {
             self.state.update_lsn(data_start);
         }
-        
+
         if reader.remaining() == 0 {
-            return Err(crate::errors::ReplicationError::protocol("WAL message has no data"));
+            return Err(crate::errors::ReplicationError::protocol(
+                "WAL message has no data",
+            ));
         }
-        
+
         // Parse the actual logical replication message
         let message_data = &data[reader.position()..];
         match MessageParser::parse_wal_message(message_data) {
@@ -164,49 +181,70 @@ impl ReplicationServer {
                 return Err(e);
             }
         }
-        
+
         self.send_feedback()?;
         Ok(())
     }
-    
+
     fn process_replication_message(&mut self, message: ReplicationMessage) -> Result<()> {
         match message {
             ReplicationMessage::Begin { xid, .. } => {
                 info!("BEGIN: Xid {}", xid);
             }
-            
+
             ReplicationMessage::Commit { .. } => {
                 info!("COMMIT\n");
             }
-            
+
             ReplicationMessage::Relation { relation } => {
-                info!("Received relation info for {}.{}", relation.namespace, relation.relation_name);
+                info!(
+                    "Received relation info for {}.{}",
+                    relation.namespace, relation.relation_name
+                );
                 self.state.add_relation(relation);
             }
-            
-            ReplicationMessage::Insert { relation_id, tuple_data, is_stream, xid } => {
+
+            ReplicationMessage::Insert {
+                relation_id,
+                tuple_data,
+                is_stream,
+                xid,
+            } => {
                 if let Some(relation) = self.state.get_relation(relation_id) {
                     if is_stream {
                         if let Some(xid) = xid {
                             info!("Streaming, Xid: {} ", xid);
                         }
                     }
-                    info!("table {}.{}: INSERT: ", relation.namespace, relation.relation_name);
+                    info!(
+                        "table {}.{}: INSERT: ",
+                        relation.namespace, relation.relation_name
+                    );
                     self.info_tuple_data(relation, &tuple_data)?;
                 } else {
                     error!("Received INSERT for unknown relation: {}", relation_id);
                 }
             }
-            
-            ReplicationMessage::Update { relation_id, key_type, old_tuple_data, new_tuple_data, is_stream, xid } => {
+
+            ReplicationMessage::Update {
+                relation_id,
+                key_type,
+                old_tuple_data,
+                new_tuple_data,
+                is_stream,
+                xid,
+            } => {
                 if let Some(relation) = self.state.get_relation(relation_id) {
                     if is_stream {
                         if let Some(xid) = xid {
                             info!("Streaming, Xid: {} ", xid);
                         }
                     }
-                    info!("table {}.{} UPDATE ", relation.namespace, relation.relation_name);
-                    
+                    info!(
+                        "table {}.{} UPDATE ",
+                        relation.namespace, relation.relation_name
+                    );
+
                     if let Some(old_data) = old_tuple_data {
                         let key_info = match key_type {
                             Some('K') => "INDEX: ",
@@ -219,14 +257,20 @@ impl ReplicationServer {
                     } else {
                         info!("New Row: ");
                     }
-                    
+
                     self.info_tuple_data(relation, &new_tuple_data)?;
                 } else {
                     error!("Received UPDATE for unknown relation: {}", relation_id);
                 }
             }
-            
-            ReplicationMessage::Delete { relation_id, key_type, tuple_data, is_stream, xid } => {
+
+            ReplicationMessage::Delete {
+                relation_id,
+                key_type,
+                tuple_data,
+                is_stream,
+                xid,
+            } => {
                 if let Some(relation) = self.state.get_relation(relation_id) {
                     if is_stream {
                         if let Some(xid) = xid {
@@ -238,26 +282,34 @@ impl ReplicationServer {
                         'O' => "REPLICA IDENTITY",
                         _ => "UNKNOWN",
                     };
-                    info!("table {}.{}: DELETE: ({}): ", relation.namespace, relation.relation_name, key_info);
+                    info!(
+                        "table {}.{}: DELETE: ({}): ",
+                        relation.namespace, relation.relation_name, key_info
+                    );
                     self.info_tuple_data(relation, &tuple_data)?;
                 } else {
                     error!("Received DELETE for unknown relation: {}", relation_id);
                 }
             }
-            
-            ReplicationMessage::Truncate { relation_ids, flags, is_stream, xid } => {
+
+            ReplicationMessage::Truncate {
+                relation_ids,
+                flags,
+                is_stream,
+                xid,
+            } => {
                 if is_stream {
                     if let Some(xid) = xid {
                         info!("Streaming, Xid: {} ", xid);
                     }
                 }
-                
+
                 let flag_info = match flags {
                     1 => "CASCADE ",
                     2 => "RESTART IDENTITY ",
                     _ => "",
                 };
-                
+
                 info!("TRUNCATE {}", flag_info);
                 for relation_id in relation_ids {
                     if let Some(relation) = self.state.get_relation(relation_id) {
@@ -267,72 +319,74 @@ impl ReplicationServer {
                     }
                 }
             }
-            
+
             ReplicationMessage::StreamStart { xid, .. } => {
                 info!("Opening a streamed block for transaction {}", xid);
             }
-            
+
             ReplicationMessage::StreamStop => {
                 info!("Stream Stop");
             }
-            
+
             ReplicationMessage::StreamCommit { xid, .. } => {
                 info!("Committing streamed transaction {}\n", xid);
             }
-            
+
             ReplicationMessage::StreamAbort { xid, .. } => {
                 info!("Aborting streamed transaction {}", xid);
             }
         }
-        
+
         Ok(())
     }
-    
+
     fn info_tuple_data(&self, relation: &RelationInfo, tuple_data: &TupleData) -> Result<()> {
         for (i, column_data) in tuple_data.columns.iter().enumerate() {
             if column_data.data_type == 'n' {
                 continue; // Skip NULL values
             }
-            
+
             if i < relation.columns.len() {
                 info!("{}: {} ", relation.columns[i].column_name, column_data.data);
             }
         }
         Ok(())
     }
-    
+
     fn send_feedback(&mut self) -> Result<()> {
         if self.state.received_lsn == 0 {
             return Ok(());
         }
-        
+
         let now = std::time::SystemTime::now();
         let timestamp = system_time_to_postgres_timestamp(now);
-        
+
         let mut reply_buf = [0u8; 34]; // 1 + 8 + 8 + 8 + 8 + 1
         let bytes_written = {
             let mut writer = BufferWriter::new(&mut reply_buf);
-            
+
             writer.write_u8(b'r')?;
-            writer.write_u64(self.state.received_lsn)?;        // Received LSN
-            writer.write_u64(self.state.received_lsn)?;        // Flushed LSN (same as received)
-            writer.write_u64(INVALID_XLOG_REC_PTR)?;           // Applied LSN (not tracking)
-            writer.write_i64(timestamp)?;                      // Timestamp
-            writer.write_u8(0)?;                               // Don't request reply
-            
+            writer.write_u64(self.state.received_lsn)?; // Received LSN
+            writer.write_u64(self.state.received_lsn)?; // Flushed LSN (same as received)
+            writer.write_u64(INVALID_XLOG_REC_PTR)?; // Applied LSN (not tracking)
+            writer.write_i64(timestamp)?; // Timestamp
+            writer.write_u8(0)?; // Don't request reply
+
             writer.bytes_written()
         };
-        
+
         self.connection.put_copy_data(&reply_buf[..bytes_written])?;
         self.connection.flush()?;
-        
+
         debug!("Sent feedback with LSN: {}", self.state.received_lsn);
         Ok(())
     }
-    
+
     fn check_and_send_feedback(&mut self) -> Result<()> {
         let now = Instant::now();
-        if now.duration_since(self.state.last_feedback_time) > Duration::from_secs(self.config.feedback_interval_secs) {
+        if now.duration_since(self.state.last_feedback_time)
+            > Duration::from_secs(self.config.feedback_interval_secs)
+        {
             self.send_feedback()?;
             self.state.last_feedback_time = now;
         }

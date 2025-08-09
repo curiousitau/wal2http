@@ -1,15 +1,15 @@
 //! Utility functions for PostgreSQL replication
 //! Contains helper functions for byte manipulation, timestamp conversion, and other utilities
 
+use crate::errors::Result;
 use libpq_sys::*;
 use std::ffi::{CStr, CString};
 use std::ptr;
-use crate::errors::Result;
-use std::time::{SystemTime, Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // PostgreSQL epoch constants
 const POSTGRES_EPOCH_JDATE: i64 = 2451545; // date2j(2000, 1, 1)
-const UNIX_EPOCH_JDATE: i64 = 2440588;     // date2j(1970, 1, 1)
+const UNIX_EPOCH_JDATE: i64 = 2440588; // date2j(1970, 1, 1)
 const SECS_PER_DAY: i64 = 86400;
 
 // Type aliases to match PostgreSQL types
@@ -24,25 +24,25 @@ pub const INVALID_XLOG_REC_PTR: XLogRecPtr = 0;
 pub fn system_time_to_postgres_timestamp(time: SystemTime) -> TimestampTz {
     let duration_since_unix = time.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
     let microseconds = duration_since_unix.as_micros() as i64;
-    
+
     let postgres_diff_micros = (POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * SECS_PER_DAY * 1_000_000;
-    
+
     microseconds - postgres_diff_micros
 }
 
 /// Read a value from buffer with proper endianness handling
-pub fn buf_recv<T>(buf: &[u8]) -> T 
+pub fn buf_recv<T>(buf: &[u8]) -> T
 where
     T: Copy,
 {
     assert!(buf.len() >= std::mem::size_of::<T>());
-    
+
     unsafe {
         let mut val: T = std::mem::zeroed();
         std::ptr::copy_nonoverlapping(
             buf.as_ptr(),
             &mut val as *mut T as *mut u8,
-            std::mem::size_of::<T>()
+            std::mem::size_of::<T>(),
         );
         val
     }
@@ -79,19 +79,18 @@ pub fn buf_recv_i64(buf: &[u8]) -> i64 {
     i64::from_be_bytes(buf[..8].try_into().unwrap())
 }
 
-
 /// Write a value to buffer with proper endianness handling
 pub fn buf_send<T>(val: T, buf: &mut [u8])
 where
     T: Copy,
 {
     assert!(buf.len() >= std::mem::size_of::<T>());
-    
+
     unsafe {
         std::ptr::copy_nonoverlapping(
             &val as *const T as *const u8,
             buf.as_mut_ptr(),
-            std::mem::size_of::<T>()
+            std::mem::size_of::<T>(),
         );
     }
 }
@@ -138,7 +137,7 @@ pub fn buf_send_i64(val: i64, buf: &mut [u8]) {
 /// Parse command line arguments into PostgreSQL connection string
 pub fn parse_connection_args(args: Vec<String>) -> String {
     let mut conn_str = String::new();
-    let mut i = 0; 
+    let mut i = 0;
     while i < args.len() {
         if i + 1 < args.len() {
             if !conn_str.is_empty() {
@@ -152,7 +151,7 @@ pub fn parse_connection_args(args: Vec<String>) -> String {
             break;
         }
     }
-    
+
     conn_str
 }
 
@@ -165,13 +164,13 @@ impl PGConnection {
     pub fn connect(conninfo: &str) -> Result<Self> {
         let c_conninfo = CString::new(conninfo)?;
         let conn = unsafe { PQconnectdb(c_conninfo.as_ptr()) };
-        
+
         if conn.is_null() {
             return Err(crate::errors::ReplicationError::connection(
-                "Failed to allocate connection object"
+                "Failed to allocate connection object",
             ));
         }
-        
+
         let status = unsafe { PQstatus(conn) };
         if status != ConnStatusType::CONNECTION_OK {
             let error_msg = unsafe {
@@ -183,64 +182,79 @@ impl PGConnection {
                 }
             };
             unsafe { PQfinish(conn) };
-            return Err(crate::errors::ReplicationError::connection(
-                format!("Connection failed: {}", error_msg)
-            ));
+            return Err(crate::errors::ReplicationError::connection(format!(
+                "Connection failed: {}",
+                error_msg
+            )));
         }
-        
+
         Ok(Self { conn })
     }
-    
+
     pub fn exec(&self, query: &str) -> Result<PGResult> {
         let c_query = CString::new(query)?;
         let result = unsafe { PQexec(self.conn, c_query.as_ptr()) };
-        
+
         if result.is_null() {
-            return Err(crate::errors::ReplicationError::protocol("Query execution failed"));
+            return Err(crate::errors::ReplicationError::protocol(
+                "Query execution failed",
+            ));
         }
-        
+
         Ok(PGResult { result })
     }
-    
+
     pub fn get_copy_data(&self, timeout: i32) -> Result<Option<Vec<u8>>> {
         let mut buffer: *mut std::os::raw::c_char = ptr::null_mut();
         let result = unsafe { PQgetCopyData(self.conn, &mut buffer, timeout) };
 
         match result {
-            -2 => Err(crate::errors::ReplicationError::protocol("Copy operation failed")),
+            -2 => Err(crate::errors::ReplicationError::protocol(
+                "Copy operation failed",
+            )),
             -1 => Ok(None), // No more data
             0 => Ok(None),  // Timeout or no data available
             len => {
                 if buffer.is_null() {
-                    return Err(crate::errors::ReplicationError::buffer("Received null buffer"));
+                    return Err(crate::errors::ReplicationError::buffer(
+                        "Received null buffer",
+                    ));
                 }
-                
+
                 let data = unsafe {
                     std::slice::from_raw_parts(buffer as *const u8, len as usize).to_vec()
                 };
-                
+
                 unsafe { PQfreemem(buffer as *mut std::os::raw::c_void) };
                 Ok(Some(data))
             }
         }
     }
-    
+
     pub fn put_copy_data(&self, data: &[u8]) -> Result<()> {
         let result = unsafe {
-            PQputCopyData(self.conn, data.as_ptr() as *const std::os::raw::c_char, data.len() as i32)
+            PQputCopyData(
+                self.conn,
+                data.as_ptr() as *const std::os::raw::c_char,
+                data.len() as i32,
+            )
         };
-        
+
         if result != 1 {
-            return Err(crate::errors::ReplicationError::protocol("Failed to send copy data"));
+            return Err(crate::errors::ReplicationError::protocol(
+                "Failed to send copy data",
+            ));
         }
-        
+
         Ok(())
     }
-    
+
     pub fn flush(&self) -> Result<()> {
         let result = unsafe { PQflush(self.conn) };
         if result != 0 {
-            return Err(crate::errors::ReplicationError::protocol("Failed to flush connection"));
+            return Err(crate::errors::ReplicationError::protocol(
+                "Failed to flush connection",
+            ));
         }
         Ok(())
     }
@@ -263,27 +277,28 @@ impl PGResult {
     pub fn status(&self) -> ExecStatusType {
         unsafe { PQresultStatus(self.result) }
     }
-    
+
     pub fn is_ok(&self) -> bool {
-        matches!(self.status(), ExecStatusType::PGRES_TUPLES_OK | ExecStatusType::PGRES_COMMAND_OK)
+        matches!(
+            self.status(),
+            ExecStatusType::PGRES_TUPLES_OK | ExecStatusType::PGRES_COMMAND_OK
+        )
     }
-    
+
     pub fn ntuples(&self) -> i32 {
         unsafe { PQntuples(self.result) }
     }
-    
+
     pub fn nfields(&self) -> i32 {
         unsafe { PQnfields(self.result) }
     }
-    
+
     pub fn getvalue(&self, row: i32, col: i32) -> Option<String> {
         let value_ptr = unsafe { PQgetvalue(self.result, row, col) };
         if value_ptr.is_null() {
             None
         } else {
-            unsafe {
-                Some(CStr::from_ptr(value_ptr).to_string_lossy().into_owned())
-            }
+            unsafe { Some(CStr::from_ptr(value_ptr).to_string_lossy().into_owned()) }
         }
     }
 }
@@ -295,4 +310,3 @@ impl Drop for PGResult {
         }
     }
 }
-

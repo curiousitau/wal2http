@@ -1,25 +1,24 @@
-
 //! PostgreSQL Replication Checker - Rust Edition
-//! 
+//!
 //! A Rust implementation of a PostgreSQL logical replication client that connects to a database,
 //! creates replication slots, and displays changes in real-time.
-//! 
+//!
 //! Based on the C++ implementation: https://github.com/fkfk000/replication_checker
 
-mod utils;
-mod types;
+mod buffer;
+mod errors;
 mod parser;
 mod server;
-mod errors;
-mod buffer;
+mod types;
+mod utils;
 
-use errors::Result;
-use clap::Parser;
-use tracing::{info, error};
-use tracing_subscriber::{fmt, EnvFilter};
-use std::env;
-use crate::types::ReplicationConfig;
 use crate::server::ReplicationServer;
+use crate::types::ReplicationConfig;
+use clap::Parser;
+use errors::Result;
+use std::env;
+use tracing::{error, info};
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -36,9 +35,8 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize tracing
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+
     fmt()
         .with_env_filter(filter)
         .with_target(false)
@@ -76,16 +74,14 @@ async fn main() -> Result<()> {
 }
 
 async fn run_replication_server(config: ReplicationConfig) -> Result<()> {
-    // Run the server in a blocking task since libpq is synchronous
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        let mut server = ReplicationServer::new(config)?;
-        
-        server.identify_system()
-            .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
-        
-        server.create_replication_slot_and_start()
-            .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
-        
-        Ok(())
-    }).await?
+    let mut server = ReplicationServer::new(config)?;
+
+    server
+        .identify_system()
+        .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
+    server
+        .create_replication_slot_and_start().await
+        .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
+
+    Ok(())
 }

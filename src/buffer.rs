@@ -1,4 +1,4 @@
-use crate::errors::{Result, ReplicationError};
+use crate::errors::{ReplicationError, Result};
 use crate::utils::{buf_recv_i16, buf_recv_i32, buf_recv_i64, buf_recv_u32, buf_recv_u64};
 
 /// A buffer reader that manages position and provides meaningful parsing methods
@@ -11,7 +11,10 @@ pub struct BufferReader<'a> {
 impl<'a> BufferReader<'a> {
     /// Create a new buffer reader from a byte slice
     pub fn new(buffer: &'a [u8]) -> Self {
-        Self { buffer, position: 0 }
+        Self {
+            buffer,
+            position: 0,
+        }
     }
 
     /// Get current position in the buffer
@@ -106,42 +109,42 @@ impl<'a> BufferReader<'a> {
     /// Read a null-terminated string at current position
     pub fn read_null_terminated_string(&mut self) -> Result<String> {
         let start_pos = self.position;
-        
+
         // Find the null terminator
         while self.position < self.buffer.len() && self.buffer[self.position] != 0 {
             self.position += 1;
         }
-        
+
         if self.position >= self.buffer.len() {
             return Err(ReplicationError::parse("String not null-terminated"));
         }
-        
+
         // Extract the string
         let string_bytes = &self.buffer[start_pos..self.position];
         let string_value = String::from_utf8_lossy(string_bytes).into_owned();
-        
+
         // Skip the null terminator
         self.position += 1;
-        
+
         Ok(string_value)
     }
 
     /// Read a length-prefixed string (32-bit length followed by data)
     pub fn read_length_prefixed_string(&mut self) -> Result<String> {
         let length = self.read_i32()?;
-        
+
         if length < 0 {
             return Err(ReplicationError::parse("Negative string length"));
         }
-        
+
         let length = length as usize;
         if !self.has_bytes(length) {
             return Err(ReplicationError::parse("String data truncated"));
         }
-        
+
         let string_bytes = &self.buffer[self.position..self.position + length];
         let string_value = String::from_utf8_lossy(string_bytes).into_owned();
-        
+
         self.position += length;
         Ok(string_value)
     }
@@ -175,7 +178,10 @@ pub struct BufferWriter<'a> {
 impl<'a> BufferWriter<'a> {
     /// Create a new buffer writer from a mutable byte slice
     pub fn new(buffer: &'a mut [u8]) -> Self {
-        Self { buffer, position: 0 }
+        Self {
+            buffer,
+            position: 0,
+        }
     }
 
     /// Get remaining space in the buffer
