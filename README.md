@@ -83,8 +83,8 @@ brew install postgresql
 
 ```bash
 # Set environment variables
-export SlotName="my_slot"
-export PubName="my_publication"
+export slot_name="my_slot"
+export pub_name="my_publication"
 
 # Run the replication checker
 ./target/release/pg_replica_rs user azureuser replication database host 127.0.0.1 dbname postgres port 5432
@@ -100,8 +100,8 @@ pg_replica_rs user <username> password <password> host <hostname> port <port> db
 
 ### Environment Variables
 
-- `SlotName`: Name of the replication slot to create/use (default: "sub")
-- `PubName`: Name of the publication to subscribe to (default: "pub")
+- `slot_name`: Name of the replication slot to create/use (default: "sub")
+- `pub_name`: Name of the publication to subscribe to (default: "pub")
 
 ### Logging
 
@@ -203,7 +203,7 @@ The implementation consists of several key modules:
 
 ```bash
 docker build -t pg_replica_rs .
-docker run -e SlotName=my_slot -e PubName=my_pub pg_replica_rs user postgres password secret host host.docker.internal port 5432 dbname mydb
+docker run -e slot_name=my_slot -e pub_name=my_pub pg_replica_rs user postgres password secret host host.docker.internal port 5432 dbname mydb
 ```
 
 ## License

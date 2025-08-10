@@ -47,8 +47,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Check for required environment variables
-    let slot_name = env::var("SlotName").unwrap_or_else(|_| "sub".to_string());
-    let publication_name = env::var("PubName").unwrap_or_else(|_| "pub".to_string());
+    let slot_name = env::var("slot_name").unwrap_or_else(|_| "sub".to_string());
+    let publication_name = env::var("pub_name").unwrap_or_else(|_| "pub".to_string());
 
     info!("Slot name: {}", slot_name);
     info!("Publication name: {}", publication_name);
