@@ -9,9 +9,6 @@ use std::ptr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // PostgreSQL epoch constants
-const POSTGRES_EPOCH_JDATE: i64 = 2_451_545; // date2j(2000, 1, 1)
-const UNIX_EPOCH_JDATE: i64 = 2_440_588; // date2j(1970, 1, 1)
-const SECS_PER_DAY: i64 = 86_400;
 const PG_EPOCH_OFFSET_SECS: i64 = 946_684_800; // Seconds from 1970 to 2000
 
 // Type aliases to match PostgreSQL types
@@ -24,12 +21,16 @@ pub const INVALID_XLOG_REC_PTR: XLogRecPtr = 0;
 
 /// Convert SystemTime to PostgreSQL timestamp format
 pub fn system_time_to_postgres_timestamp(time: SystemTime) -> TimestampTz {
-    let duration_since_unix = time.duration_since(UNIX_EPOCH).unwrap_or(Duration::ZERO);
-    let microseconds = duration_since_unix.as_micros() as i64;
+    let duration_since_unix = time
+        .duration_since(UNIX_EPOCH)
+        .expect("SystemTime is before Unix epoch");
 
-    let postgres_diff_micros = (POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * SECS_PER_DAY * 1_000_000;
+    let unix_secs = duration_since_unix.as_secs() as i64;
+    let unix_micros =
+        unix_secs * 1_000_000 + (duration_since_unix.subsec_micros() as i64);
 
-    microseconds - postgres_diff_micros
+    // Shift Unix epoch to PostgreSQL epoch
+    unix_micros - PG_EPOCH_OFFSET_SECS * 1_000_000
 }
 
 /// Read a value from buffer with proper endianness handling

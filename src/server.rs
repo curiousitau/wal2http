@@ -32,7 +32,8 @@ impl ReplicationServer {
         debug!("Identifying system");
         match self.connection.exec("IDENTIFY_SYSTEM") {
             Ok(result) => {
-                info!("IDENTIFY_SYSTEM succeeded: {:?}", result.status());
+                info!("IDENTIFY_SYSTEM succeeded: {:?}, system_id: {:?}, timeline: {:?}, xlogpos: {:?}, dbname: {:?}", 
+                    result.status(), result.getvalue(0, 0), result.getvalue(0, 1), result.getvalue(0, 2), result.getvalue(0, 3));
             }
             Err(err) => {
                 return Err(crate::errors::ReplicationError::protocol(format!(
@@ -87,10 +88,10 @@ impl ReplicationServer {
         );
 
         info!(
-            "Starting replication with publication: {}, SQL:{}",
+            "Starting replication with publication: {}, executing SQL: {}",
             self.config.publication_name, start_replication_sql
         );
-        let _result = self.connection.exec(&start_replication_sql)?;
+        let _ = self.connection.exec(&start_replication_sql)?;
 
         info!("Started receiving data from database server");
         self.replication_loop().await?;
@@ -116,6 +117,7 @@ impl ReplicationServer {
                         data[0] as char,
                         data.len()
                     );
+                    // please refer to https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-XLOGDATA
                     match data[0] as char {
                         'k' => {
                             self.process_keepalive_message(&data)?;
@@ -373,7 +375,6 @@ impl ReplicationServer {
 
         let now = SystemTime::now();
         let timestamp = system_time_to_postgres_timestamp(now);
-
         let mut reply_buf = [0u8; 34]; // 1 + 8 + 8 + 8 + 8 + 1
         let bytes_written = {
             let mut writer = BufferWriter::new(&mut reply_buf);
