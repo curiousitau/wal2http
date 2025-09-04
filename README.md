@@ -62,7 +62,9 @@ Make sure you have libpq development libraries installed:
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt-get install libpq-dev
+sudo apt-get install libpq-dev \
+    clang \
+    libclang-dev 
 ```
 
 **CentOS/RHEL/Fedora:**
