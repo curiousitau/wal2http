@@ -32,12 +32,24 @@ impl ReplicationServer {
         debug!("Identifying system");
         match self.connection.exec("IDENTIFY_SYSTEM") {
             Ok(result) => {
-                info!("IDENTIFY_SYSTEM succeeded: {:?}, system_id: {:?}, timeline: {:?}, xlogpos: {:?}, dbname: {:?}", 
-                    result.status(), result.getvalue(0, 0), result.getvalue(0, 1), result.getvalue(0, 2), result.getvalue(0, 3));
+                let status = result.status();
+                if result.is_ok() && result.ntuples() > 0 {
+                    let system_id = result.getvalue(0, 0);
+                    let timeline = result.getvalue(0, 1); 
+                    let xlogpos = result.getvalue(0, 2);
+                    let dbname = result.getvalue(0, 3);
+                    info!("IDENTIFY_SYSTEM succeeded: status: {:?}, system_id: {:?}, timeline: {:?}, xlogpos: {:?}, dbname: {:?}", 
+                        status, system_id, timeline, xlogpos, dbname);
+                } else {
+                    return Err(crate::errors::ReplicationError::protocol(format!(
+                        "IDENTIFY_SYSTEM failed: status: {:?}, rows: {}, columns: {}. This usually means the connection is not in replication mode or lacks replication privileges.",
+                        status, result.ntuples(), result.nfields()
+                    )));
+                }
             }
             Err(err) => {
                 return Err(crate::errors::ReplicationError::protocol(format!(
-                    "IDENTIFY_SYSTEM failed: {}",
+                    "IDENTIFY_SYSTEM command failed: {}",
                     err
                 )));
             }
@@ -112,11 +124,7 @@ impl ReplicationServer {
                     if data.is_empty() {
                         continue;
                     }
-                    debug!(
-                        "PQgetCopyData returned: {}, data len: {}",
-                        data[0] as char,
-                        data.len()
-                    );
+                    
                     // please refer to https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-XLOGDATA
                     match data[0] as char {
                         'k' => {
@@ -212,10 +220,10 @@ impl ReplicationServer {
             }
 
             ReplicationMessage::Relation { relation } => {
-                info!(
-                    "Received relation info for {}.{}",
-                    relation.namespace, relation.relation_name
-                );
+                // info!(
+                //     "Received relation info for {}.{}",
+                //     relation.namespace, relation.relation_name
+                // );
                 self.state.add_relation(relation);
             }
 
@@ -252,7 +260,7 @@ impl ReplicationServer {
                 if let Some(relation) = self.state.get_relation(relation_id) {
                     if is_stream {
                         if let Some(xid) = xid {
-                            info!("Streaming, Xid: {} ", xid);
+                                                        info!("Streaming, Xid: {} ", xid);
                         }
                     }
                     info!(

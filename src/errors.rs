@@ -54,6 +54,10 @@ pub enum ReplicationError {
     /// Generic error for compatibility
     #[error(transparent)]
     Other(#[from] anyhow::Error),
+
+    /// Missing required environment variable, includes the name of the missing variable
+    #[error("Missing required environment variable: {0}")]
+    MissingEnvVar(String),
 }
 
 /// Result type alias for convenience

@@ -7,44 +7,29 @@
 
 mod buffer;
 mod errors;
+mod logging;
 mod parser;
 mod server;
 mod types;
 mod utils;
 
+use crate::logging::LoggingConfig;
 use crate::server::ReplicationServer;
 use crate::types::ReplicationConfig;
-use clap::Parser;
 use errors::Result;
 use std::env;
-use tracing::{error, info};
-use tracing_subscriber::{fmt, EnvFilter};
+use tokio::signal;
+use tracing::{error, info, warn};
 
-#[derive(Parser, Debug)]
-#[command(
-    name = "pg_replica_rs",
-    about = "PostgreSQL Logical Replication Checker in Rust",
-    version = "0.1.0"
-)]
-struct Args {
-    /// Database connection parameters (space-separated key=value pairs)
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    connection_params: Vec<String>,
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize tracing
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .init();
-
-    let args = Args::parse();
+    // Initialize logging from environment variables
+    let logging_config = LoggingConfig::from_env()
+        .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
+    
+    logging_config.init_logging()
+        .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
 
     // Check for required environment variables
     let slot_name = env::var("slot_name").unwrap_or_else(|_| "sub".to_string());
@@ -53,10 +38,10 @@ async fn main() -> Result<()> {
     info!("Slot name: {}", slot_name);
     info!("Publication name: {}", publication_name);
 
-    // Parse connection parameters
-    let connection_string = crate::utils::parse_connection_args(args.connection_params);
-    info!("Connection string: {}", connection_string);
-
+    // Get connection string from environment variable
+    let connection_string = env::var("DB_CONNECTION_STRING")
+        .map_err(|_| crate::errors::ReplicationError::MissingEnvVar("DB_CONNECTION_STRING".into()))?;
+    
     // Create configuration with validation
     let config = ReplicationConfig::new(connection_string, publication_name, slot_name)?;
 
@@ -76,12 +61,26 @@ async fn main() -> Result<()> {
 async fn run_replication_server(config: ReplicationConfig) -> Result<()> {
     let mut server = ReplicationServer::new(config)?;
 
-    server
-        .identify_system()
-        .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
-    server
-        .create_replication_slot_and_start().await
-        .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
+    // Set up graceful shutdown handling
+    let shutdown_signal = async {
+        signal::ctrl_c()
+            .await
+            .expect("Failed to install CTRL+C signal handler");
+        warn!("Received interrupt signal, shutting down gracefully...");
+    };
 
-    Ok(())
+    // Run the server with shutdown handling
+    tokio::select! {
+        result = async {
+            server.identify_system()
+                .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
+            server.create_replication_slot_and_start().await
+                .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
+            Ok(())
+        } => result,
+        _ = shutdown_signal => {
+            info!("Graceful shutdown completed");
+            Ok(())
+        }
+    }
 }

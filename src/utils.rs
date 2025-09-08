@@ -6,7 +6,7 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use libpq_sys::*;
 use std::ffi::{CStr, CString};
 use std::ptr;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{ SystemTime, UNIX_EPOCH};
 
 // PostgreSQL epoch constants
 const PG_EPOCH_OFFSET_SECS: i64 = 946_684_800; // Seconds from 1970 to 2000
@@ -137,26 +137,6 @@ pub fn buf_send_i64(val: i64, buf: &mut [u8]) {
     buf[..8].copy_from_slice(&bytes);
 }
 
-/// Parse command line arguments into PostgreSQL connection string
-pub fn parse_connection_args(args: Vec<String>) -> String {
-    let mut conn_str = String::new();
-    let mut i = 0;
-    while i < args.len() {
-        if i + 1 < args.len() {
-            if !conn_str.is_empty() {
-                conn_str.push(' ');
-            }
-            conn_str.push_str(&args[i]);
-            conn_str.push('=');
-            conn_str.push_str(&args[i + 1]);
-            i += 2;
-        } else {
-            break;
-        }
-    }
-
-    conn_str
-}
 
 /// Safe wrapper for PostgreSQL connection
 pub struct PGConnection {
