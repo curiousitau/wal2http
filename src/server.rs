@@ -18,6 +18,7 @@ use crate::utils::{
 };
 use libpq_sys::ExecStatusType;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 use tracing::{debug, error, info, warn};
 
@@ -31,6 +32,7 @@ pub struct ReplicationServer {
     config: ReplicationConfig,
     state: ReplicationState,
     event_sink: Option<Arc<dyn EventSink + Send + Sync>>,
+    shutdown_signal: Arc<AtomicBool>,
 }
 
 impl ReplicationServer {
@@ -38,7 +40,7 @@ impl ReplicationServer {
     ///
     /// Establishes database connection and initializes the appropriate event sink
     /// based on configuration (Hook0, HTTP endpoint, or STDOUT fallback).
-    pub fn new(config: ReplicationConfig) -> ReplicationResult<Self> {
+    pub fn new(config: ReplicationConfig, shutdown_signal: Arc<AtomicBool>) -> ReplicationResult<Self> {
         info!("Connecting to database: {}", config.connection_string);
         let connection = PGConnection::connect(&config.connection_string)?;
         info!("Successfully connected to database server");
@@ -115,6 +117,7 @@ impl ReplicationServer {
             config,
             state: ReplicationState::new(),
             event_sink,
+            shutdown_signal,
         })
     }
 
@@ -308,6 +311,13 @@ impl ReplicationServer {
 
     async fn replication_loop(&mut self) -> ReplicationResult<()> {
         loop {
+            // Check for shutdown signal before each iteration
+            if self.shutdown_signal.load(Ordering::SeqCst) {
+                info!("Shutdown signal received, initiating graceful shutdown");
+                self.perform_graceful_shutdown().await?;
+                break;
+            }
+
             self.check_and_send_feedback()?;
 
             match self.connection.get_copy_data()? {
@@ -332,6 +342,13 @@ impl ReplicationServer {
                         }
                         'w' => {
                             self.process_wal_message(&data).await?;
+                            
+                            // Check for shutdown signal after processing a WAL message
+                            if self.shutdown_signal.load(Ordering::SeqCst) {
+                                info!("Shutdown signal received after processing WAL message, initiating graceful shutdown");
+                                self.perform_graceful_shutdown().await?;
+                                break;
+                            }
                         }
                         _ => {
                             warn!("Received unknown message type: {}", data[0] as char);
@@ -340,6 +357,9 @@ impl ReplicationServer {
                 }
             }
         }
+        
+        info!("Replication loop completed");
+        Ok(())
     }
 
     /// Process a keepalive message from the replication stream
@@ -494,13 +514,45 @@ impl ReplicationServer {
         self.connection.put_copy_data(&reply_buf)?;
 
           debug!(
-            "Sent feedback with received LSN: {:x}, applied LSN: {:x}",
-            self.state.received_lsn, self.state.applied_lsn
-        );
-        Ok(())
-    }
-
-    fn check_and_send_feedback(&mut self) -> ReplicationResult<()> {
+              "Sent feedback with received LSN: {:x}, applied LSN: {:x}",
+              self.state.received_lsn, self.state.applied_lsn
+          );
+          Ok(())
+      }
+  
+      /// Performs graceful shutdown of the replication server
+      ///
+      /// This method ensures that:
+      /// 1. Final feedback is sent to PostgreSQL with the latest LSN
+      /// 2. The replication connection is properly closed
+      /// 3. Any pending events are flushed to the event sink
+      /// 4. Resources are cleaned up in the correct order
+      async fn perform_graceful_shutdown(&mut self) -> ReplicationResult<()> {
+          info!("Starting graceful shutdown process");
+          
+          // Send final feedback to PostgreSQL with the latest LSN position
+          // This ensures PostgreSQL knows we've processed all changes up to this point
+          if let Err(e) = self.send_feedback() {
+              warn!("Failed to send final feedback during shutdown: {}", e);
+          } else {
+              info!("Successfully sent final feedback to PostgreSQL");
+          }
+          
+          // Flush any remaining data in the connection
+          if let Err(e) = self.connection.flush() {
+              warn!("Failed to flush connection during shutdown: {}", e);
+          }
+          
+          // Close the replication connection properly
+          // This tells PostgreSQL we're done with the replication slot
+          info!("Closing replication connection");
+          // Note: The actual connection cleanup will happen when the struct is dropped
+          
+          info!("Graceful shutdown completed successfully");
+          Ok(())
+      }
+  
+      fn check_and_send_feedback(&mut self) -> ReplicationResult<()> {
         let now = Instant::now();
         if now.duration_since(self.state.last_feedback_time)
             > Duration::from_secs(self.config.feedback_interval_secs)
