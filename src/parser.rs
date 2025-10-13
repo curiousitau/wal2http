@@ -2,7 +2,7 @@
 //! Handles parsing of various message types from the replication stream
 
 use crate::buffer::BufferReader;
-use crate::errors::{ReplicationError, Result};
+use crate::errors::{ReplicationError, ReplicationResult};
 use crate::types::*;
 use tracing::{debug, error, warn};
 
@@ -14,7 +14,7 @@ impl MessageParser {
     /// Returns a ReplicationMessage on success
     /// Errors with ReplicationError on failure
     /// please refer to https://www.postgresql.org/docs/current/protocol-logicalrep-message-formats.html#PROTOCOL-LOGICALREP-MESSAGE-FORMATS
-    pub fn parse_wal_message(buffer: &[u8]) -> Result<ReplicationMessage> {
+    pub fn parse_wal_message(buffer: &[u8]) -> ReplicationResult<ReplicationMessage> {
         let mut reader = BufferReader::new(buffer);
         let message_type = reader.skip_message_type()?;
 
@@ -42,7 +42,7 @@ impl MessageParser {
         }
     }
 
-    fn parse_begin_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+    fn parse_begin_message(reader: &mut BufferReader) -> ReplicationResult<ReplicationMessage> {
         // BEGIN message: final_lsn (8) + timestamp (8) + xid (4) = 20 bytes + 1 for type
         if !reader.has_bytes(20) {
             return Err(ReplicationError::parse("Begin message too short"));
@@ -59,7 +59,7 @@ impl MessageParser {
         })
     }
 
-    fn parse_commit_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+    fn parse_commit_message(reader: &mut BufferReader) -> ReplicationResult<ReplicationMessage> {
         // COMMIT message: flags (1) + commit_lsn (8) + end_lsn (8) + timestamp (8) = 25 bytes + 1 for type
         if !reader.has_bytes(25) {
             return Err(ReplicationError::parse("Commit message too short"));
@@ -78,7 +78,7 @@ impl MessageParser {
         })
     }
 
-    fn parse_relation_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+    fn parse_relation_message(reader: &mut BufferReader) -> ReplicationResult<ReplicationMessage> {
         // RELATION message: oid (4) + namespace (null-terminated) + relation_name (null-terminated) + replica_identity (1) + column_count (2) + columns
         if !reader.has_bytes(7) {
             // Minimum: 4 + 1 + 1 + 1 + 2 (oid + empty strings + replica_identity + column_count)
@@ -126,7 +126,7 @@ impl MessageParser {
         Ok(ReplicationMessage::Relation { relation })
     }
 
-    fn parse_insert_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+    fn parse_insert_message(reader: &mut BufferReader) -> ReplicationResult<ReplicationMessage> {
         // INSERT message: first u32 could be relation_id or transaction_id depending on streaming
         if !reader.has_bytes(5) {
             // Minimum: transaction_id_or_oid (4) + 'N' marker (1)
@@ -164,7 +164,7 @@ impl MessageParser {
         })
     }
 
-    fn parse_update_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+    fn parse_update_message(reader: &mut BufferReader) -> ReplicationResult<ReplicationMessage> {
         // UPDATE message: first u32 could be relation_id or transaction_id depending on streaming
         if !reader.has_bytes(5) {
             // Minimum: transaction_id_or_oid (4) + marker (1)
@@ -209,7 +209,7 @@ impl MessageParser {
                 return Err(ReplicationError::parse_with_context(
                     "Invalid marker in update message",
                     format!("Marker: {}", marker),
-                ))
+                ));
             }
         };
 
@@ -225,7 +225,7 @@ impl MessageParser {
         })
     }
 
-    fn parse_delete_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+    fn parse_delete_message(reader: &mut BufferReader) -> ReplicationResult<ReplicationMessage> {
         // DELETE message: first u32 could be relation_id or transaction_id depending on streaming
         if !reader.has_bytes(5) {
             // Minimum: transaction_id_or_oid (4) + key_type (1)
@@ -258,7 +258,7 @@ impl MessageParser {
         })
     }
 
-    fn parse_truncate_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+    fn parse_truncate_message(reader: &mut BufferReader) -> ReplicationResult<ReplicationMessage> {
         // TRUNCATE message: Complex logic to determine if streaming or not
         if !reader.has_bytes(9) {
             // Minimum: first_u32 (4) + second_u32 (4) + flags (1)
@@ -304,7 +304,9 @@ impl MessageParser {
         })
     }
 
-    fn parse_stream_start_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+    fn parse_stream_start_message(
+        reader: &mut BufferReader,
+    ) -> ReplicationResult<ReplicationMessage> {
         // STREAM START message: xid (4) + optional first_segment (1)
         if !reader.has_bytes(4) {
             return Err(ReplicationError::parse("Stream start message too short"));
@@ -321,12 +323,16 @@ impl MessageParser {
         Ok(ReplicationMessage::StreamStart { xid, first_segment })
     }
 
-    fn parse_stream_stop_message(_reader: &mut BufferReader) -> Result<ReplicationMessage> {
+    fn parse_stream_stop_message(
+        _reader: &mut BufferReader,
+    ) -> ReplicationResult<ReplicationMessage> {
         // STREAM STOP message has no additional data
         Ok(ReplicationMessage::StreamStop)
     }
 
-    fn parse_stream_commit_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+    fn parse_stream_commit_message(
+        reader: &mut BufferReader,
+    ) -> ReplicationResult<ReplicationMessage> {
         // STREAM COMMIT message: xid (4) + flags (1) + commit_lsn (8) + end_lsn (8) + timestamp (8) = 29 bytes
         if !reader.has_bytes(29) {
             return Err(ReplicationError::parse("Stream commit message too short"));
@@ -347,7 +353,9 @@ impl MessageParser {
         })
     }
 
-    fn parse_stream_abort_message(reader: &mut BufferReader) -> Result<ReplicationMessage> {
+    fn parse_stream_abort_message(
+        reader: &mut BufferReader,
+    ) -> ReplicationResult<ReplicationMessage> {
         // STREAM ABORT message: xid (4) + subtransaction_xid (4) = 8 bytes
         if !reader.has_bytes(8) {
             return Err(ReplicationError::parse("Stream abort message too short"));
@@ -362,7 +370,7 @@ impl MessageParser {
         })
     }
 
-    fn parse_tuple_data(reader: &mut BufferReader) -> Result<TupleData> {
+    fn parse_tuple_data(reader: &mut BufferReader) -> ReplicationResult<TupleData> {
         // TUPLE DATA: column_count (2) + columns
         if !reader.has_bytes(2) {
             return Err(ReplicationError::parse("Tuple data too short"));

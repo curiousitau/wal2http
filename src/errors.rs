@@ -51,13 +51,16 @@ pub enum ReplicationError {
     #[error("Task execution error")]
     TaskExecution(#[from] tokio::task::JoinError),
 
+    #[error("Sink error")]
+    Sink { message: String, sink: String },
+
     /// Generic error for compatibility
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 
 /// Result type alias for convenience
-pub type Result<T> = std::result::Result<T, ReplicationError>;
+pub type ReplicationResult<T> = std::result::Result<T, ReplicationError>;
 
 impl ReplicationError {
     /// Create a connection error with context
@@ -96,14 +99,6 @@ impl ReplicationError {
         Self::Protocol {
             message: message.into(),
             context: None,
-        }
-    }
-
-    /// Create a protocol error with context
-    pub fn protocol_with_context<S: Into<String>, C: Into<String>>(message: S, context: C) -> Self {
-        Self::Protocol {
-            message: message.into(),
-            context: Some(context.into()),
         }
     }
 
