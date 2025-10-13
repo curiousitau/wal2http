@@ -23,6 +23,7 @@ use crate::event_sink::hook0_error::Hook0ErrorId;
 use crate::event_sink::pg_type_conversion::{
     ColumnValue, ReplicationEventDecoder, ReplicationRow, parse_timestamptz,
 };
+use crate::tracing_context::CorrelationId;
 use crate::types::ReplicationMessage;
 
 use super::EventSink;
@@ -180,7 +181,7 @@ fn parse_event_row(row: &ReplicationRow) -> Result<EventTableRow, ReplicationErr
 #[async_trait]
 impl EventSink for Hook0EventSink {
     /// Send a replication event to Hook0 API
-    async fn send_event(&self, event: &ReplicationMessage) -> ReplicationResult<()> {
+    async fn send_event(&self, event: &ReplicationMessage, correlation_id: Option<&CorrelationId>) -> ReplicationResult<()> {
         // Decode the replication message into a row
         let decoder = self.decoder.clone();
         let decoded_event = decoder.lock().await.decode(event);
@@ -257,10 +258,18 @@ impl EventSink for Hook0EventSink {
         loop {
             attempt += 1;
 
-            debug!(
-                "About to send event to Hook0 API (attempt {}/{}): {:?}",
-                attempt, max_retries, hook0_event
-            );
+            if let Some(cid) = correlation_id {
+                debug!(
+                    correlation_id = %cid,
+                    "About to send event to Hook0 API (attempt {}/{}): {:?}",
+                    attempt, max_retries, hook0_event
+                );
+            } else {
+                debug!(
+                    "About to send event to Hook0 API (attempt {}/{}): {:?}",
+                    attempt, max_retries, hook0_event
+                );
+            }
 
             match self.hook0_client.send_event(&hook0_event).await {
                 Ok(_) => {

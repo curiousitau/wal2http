@@ -283,6 +283,25 @@ impl ReplicationState {
     }
 }
 
+impl ReplicationMessage {
+    /// Get the message type as a string for logging and tracing
+    pub fn message_type(&self) -> &'static str {
+        match self {
+            ReplicationMessage::Begin { .. } => "Begin",
+            ReplicationMessage::Commit { .. } => "Commit",
+            ReplicationMessage::Relation { .. } => "Relation",
+            ReplicationMessage::Insert { .. } => "Insert",
+            ReplicationMessage::Update { .. } => "Update",
+            ReplicationMessage::Delete { .. } => "Delete",
+            ReplicationMessage::Truncate { .. } => "Truncate",
+            ReplicationMessage::StreamStart { .. } => "StreamStart",
+            ReplicationMessage::StreamStop => "StreamStop",
+            ReplicationMessage::StreamCommit { .. } => "StreamCommit",
+            ReplicationMessage::StreamAbort { .. } => "StreamAbort",
+        }
+    }
+}
+
 impl Default for ReplicationState {
     fn default() -> Self {
         Self::new()

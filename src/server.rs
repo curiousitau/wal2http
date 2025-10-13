@@ -12,6 +12,7 @@ use crate::event_sink::EventSink;
 use crate::event_sink::hook0::{self, Hook0EventSinkConfig};
 use crate::event_sink::http::{HttpEventSink, HttpEventSinkConfig};
 use crate::parser::MessageParser;
+use crate::tracing_context::TracingContext;
 use crate::types::*;
 use crate::utils::{
     PGConnection, system_time_to_postgres_timestamp,
@@ -20,7 +21,7 @@ use libpq_sys::ExecStatusType;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, warn, instrument};
 
 /// Main replication server that manages the logical replication connection
 ///
@@ -33,6 +34,7 @@ pub struct ReplicationServer {
     state: ReplicationState,
     event_sink: Option<Arc<dyn EventSink + Send + Sync>>,
     shutdown_signal: Arc<AtomicBool>,
+    tracing_context: TracingContext,
 }
 
 impl ReplicationServer {
@@ -40,10 +42,16 @@ impl ReplicationServer {
     ///
     /// Establishes database connection and initializes the appropriate event sink
     /// based on configuration (Hook0, HTTP endpoint, or STDOUT fallback).
+    #[instrument(skip_all, fields(connection_string = %config.connection_string))]
     pub fn new(config: ReplicationConfig, shutdown_signal: Arc<AtomicBool>) -> ReplicationResult<Self> {
+        let tracing_context = TracingContext::new();
+
         info!("Connecting to database: {}", config.connection_string);
         let connection = PGConnection::connect(&config.connection_string)?;
-        info!("Successfully connected to database server");
+        info!(
+            correlation_id = %tracing_context.correlation_id,
+            "Successfully connected to database server"
+        );
 
         // Configure event sink based on provided configuration
         let event_sink = match config.event_sink.as_ref().map(|s| s.to_lowercase()).as_deref() {
@@ -118,6 +126,7 @@ impl ReplicationServer {
             state: ReplicationState::new(),
             event_sink,
             shutdown_signal,
+            tracing_context,
         })
     }
 
@@ -125,6 +134,7 @@ impl ReplicationServer {
     ///
     /// Checks that the wal_level setting is 'logical', which is required
     /// for logical replication to function.
+    #[instrument(skip(self), fields(correlation_id = %self.tracing_context.correlation_id))]
     pub fn check_wal_level(&self) -> ReplicationResult<()> {
         info!("Checking wal_level setting");
 
@@ -162,6 +172,7 @@ impl ReplicationServer {
     ///
     /// Executes IDENTIFY_SYSTEM to verify the connection supports replication
     /// and retrieves system information including timeline and WAL position.
+    #[instrument(skip(self), fields(correlation_id = %self.tracing_context.correlation_id))]
     pub fn identify_system(&self) -> ReplicationResult<()> {
         debug!("Identifying system");
         match self.connection.exec("IDENTIFY_SYSTEM") {
@@ -309,7 +320,9 @@ impl ReplicationServer {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(correlation_id = %self.tracing_context.correlation_id))]
     async fn replication_loop(&mut self) -> ReplicationResult<()> {
+        info!("Starting replication loop");
         loop {
             // Check for shutdown signal before each iteration
             if self.shutdown_signal.load(Ordering::SeqCst) {
@@ -453,24 +466,29 @@ impl ReplicationServer {
         Ok(())
     }
 
+    #[instrument(skip(self, message), fields(correlation_id = %self.tracing_context.correlation_id, message_type = ?message.message_type()))]
     async fn process_replication_message(
         &mut self,
         message: ReplicationMessage,
     ) -> ReplicationResult<()> {
         // Send event to configured sink if available
         if let Some(ref event_sink) = self.event_sink {
-            debug!("Sending event to event sink: {:?}", message);
+            info!("Sending event to event sink: {:?}", message);
 
-                match event_sink.send_event(&message).await {
+                match event_sink.send_event(&message, Some(&self.tracing_context.correlation_id)).await {
                 Ok(()) => {
-                    debug!(
-                        "Successfully sent event to sink for LSN: {:x}",
-                        self.state.received_lsn
+                    info!(
+                        correlation_id = %self.tracing_context.correlation_id,
+                        lsn = %format!("{:x}", self.state.received_lsn),
+                        "Successfully sent event to sink"
                     );
                       self.state.update_applied_lsn(self.state.received_lsn);
                 }
                 Err(e) => {
-                    error!("Failed to send event to event sink: {}", e);
+                    error!(
+                        correlation_id = %self.tracing_context.correlation_id,
+                        "Failed to send event to event sink: {}", e
+                    );
                     return Err(crate::errors::ReplicationError::protocol(format!(
                         "Event sink failed: {}",
                         e

@@ -14,6 +14,7 @@ use super::EventSink;
 use crate::email_config::EmailConfig;
 use crate::errors::ReplicationResult;
 use crate::event_sink::event_formatter;
+use crate::tracing_context::CorrelationId;
 use crate::types::ReplicationMessage;
 
 use tokio::sync::Mutex;
@@ -38,8 +39,15 @@ pub struct HttpEventSink {
 #[async_trait]
 impl EventSink for HttpEventSink {
     /// Send a replication event to the HTTP endpoint
-    async fn send_event(&self, event: &ReplicationMessage) -> ReplicationResult<()> {
-        let json_event = event_formatter::EventFormatter::format(event);
+    async fn send_event(&self, event: &ReplicationMessage, correlation_id: Option<&CorrelationId>) -> ReplicationResult<()> {
+        let mut json_event = event_formatter::EventFormatter::format(event);
+
+        // Add correlation ID to the event payload if provided
+        if let Some(cid) = correlation_id {
+            if let Some(obj) = json_event.as_object_mut() {
+                obj.insert("correlation_id".to_string(), serde_json::Value::String(cid.to_string()));
+            }
+        }
 
         // Retry configuration
         let max_retries = 5;
@@ -51,6 +59,14 @@ impl EventSink for HttpEventSink {
 
         loop {
             attempt += 1;
+
+            if let Some(cid) = correlation_id {
+                debug!(
+                    correlation_id = %cid,
+                    "Sending HTTP request (attempt {}/{})",
+                    attempt, max_retries
+                );
+            }
 
             let response = self
                 .http_client
@@ -64,7 +80,14 @@ impl EventSink for HttpEventSink {
             match response {
                 Ok(resp) => {
                     if resp.status().is_success() {
-                        debug!("Successfully sent event to HTTP endpoint");
+                        if let Some(cid) = correlation_id {
+                            debug!(
+                                correlation_id = %cid,
+                                "Successfully sent event to HTTP endpoint"
+                            );
+                        } else {
+                            debug!("Successfully sent event to HTTP endpoint");
+                        }
                         return Ok(());
                     } else {
                         error!("Failed to send event to HTTP endpoint: {}", resp.status());

@@ -9,7 +9,12 @@ libc = "0.2.175"
 tokio = { version = "1.47.1", features = ["full"] }
 clap = { version = "4.5.45", features = ["derive"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = "0.22"
+opentelemetry = "0.21"
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"] }
+opentelemetry-jaeger = { version = "0.20", features = ["rt-tokio"] }
+uuid = { version = "1.18.0", features = ["v4", "serde"] }
 anyhow = "1.0.99"
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2.0.16"
@@ -18,7 +23,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 lettre = { version = "0.11", features = ["smtp-transport", "builder"] }
 async-trait = "0.1.88"
-uuid = "1.18.0"
 hook0-client = { rev = "d7642e4ed32e9851eb67114053afcbd9cf9ab614", git = "https://github.com/hook0/hook0", features = [
 	"producer",
 ] }

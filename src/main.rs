@@ -30,6 +30,7 @@ mod errors;        // Comprehensive error types for the application
 mod event_sink;    // Output handlers for sending events to various destinations
 mod parser;        // Protocol message parser for decoding WAL data
 mod server;        // Main replication server implementation
+mod tracing_context; // Correlation ID and tracing context management
 mod types;         // Data structures and type definitions
 mod utils;         // Utility functions for PostgreSQL integration
 
@@ -41,7 +42,8 @@ use errors::ReplicationResult; // Result type alias for error handling
 use std::sync::Arc;            // Arc for shared ownership
 use std::sync::atomic::{AtomicBool, Ordering}; // Atomic flag for shutdown signaling
 use tracing::{error, info, warn};    // Structured logging
-use tracing_subscriber::{EnvFilter, fmt}; // Log formatting and filtering
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt}; // Log formatting and filtering
+use tracing_context::CorrelationId; // Correlation ID management
 
 /// Command line arguments structure using clap for parsing
 ///
@@ -87,16 +89,51 @@ struct Args {
 /// Returns `Ok(())` on successful completion or an error if replication fails.
 #[tokio::main]
 async fn main() -> ReplicationResult<()> {
-    // Initialize structured logging with tracing
-    // This sets up logging levels and output formatting
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Initialize structured logging with tracing and correlation ID support
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
 
-    fmt()
-        .with_env_filter(filter)
+    // Create a JSON formatter for structured logging
+    let json_layer = fmt::layer()
+        .json()
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_thread_names(false)
+        .with_current_span(true)
+        .with_span_list(true);
+
+    // Create a console formatter for development
+    let console_layer = fmt::layer()
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)
-        .init();
+        .compact();
+
+    // Choose formatter based on environment variable
+    let use_json = std::env::var("LOG_FORMAT")
+        .unwrap_or_else(|_| "console".to_string())
+        .to_lowercase() == "json";
+
+    if use_json {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(json_layer)
+            .init();
+        info!("Initialized structured logging with JSON format");
+    } else {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(console_layer)
+            .init();
+        info!("Initialized structured logging with console format");
+    }
+
+    // Generate a startup correlation ID for the entire application lifecycle
+    let startup_correlation_id = CorrelationId::new();
+    info!(
+        correlation_id = %startup_correlation_id,
+        "wal2http starting up"
+    );
 
     // Create a shutdown signal that can be shared across the application
     let shutdown_signal = Arc::new(AtomicBool::new(false));
