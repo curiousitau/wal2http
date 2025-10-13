@@ -9,6 +9,29 @@ use tracing::{debug, error, warn};
 /// Parse logical replication messages from a buffer
 pub struct MessageParser;
 
+/// Message type constants for better type safety
+pub const MESSAGE_TYPE_BEGIN: char = 'B';
+pub const MESSAGE_TYPE_COMMIT: char = 'C';
+pub const MESSAGE_TYPE_RELATION: char = 'R';
+pub const MESSAGE_TYPE_INSERT: char = 'I';
+pub const MESSAGE_TYPE_UPDATE: char = 'U';
+pub const MESSAGE_TYPE_DELETE: char = 'D';
+pub const MESSAGE_TYPE_TRUNCATE: char = 'T';
+pub const MESSAGE_TYPE_STREAM_START: char = 'S';
+pub const MESSAGE_TYPE_STREAM_STOP: char = 'E';
+pub const MESSAGE_TYPE_STREAM_COMMIT: char = 'c';
+pub const MESSAGE_TYPE_STREAM_ABORT: char = 'A';
+
+/// Tuple data markers
+pub const TUPLE_MARKER_NEW: char = 'N';
+pub const TUPLE_MARKER_KEY: char = 'K';
+pub const TUPLE_MARKER_OLD: char = 'O';
+
+/// Column data types
+pub const COLUMN_TYPE_NULL: char = 'n';
+pub const COLUMN_TYPE_UNCHANGED_TOAST: char = 'u';
+pub const COLUMN_TYPE_TEXT: char = 't';
+
 impl MessageParser {
     /// Parse a WAL message from the given buffer
     /// Returns a ReplicationMessage on success
@@ -21,17 +44,17 @@ impl MessageParser {
         debug!("Parsing message type: {}", message_type);
 
         match message_type {
-            'B' => Self::parse_begin_message(&mut reader),
-            'C' => Self::parse_commit_message(&mut reader),
-            'R' => Self::parse_relation_message(&mut reader),
-            'I' => Self::parse_insert_message(&mut reader),
-            'U' => Self::parse_update_message(&mut reader),
-            'D' => Self::parse_delete_message(&mut reader),
-            'T' => Self::parse_truncate_message(&mut reader),
-            'S' => Self::parse_stream_start_message(&mut reader),
-            'E' => Self::parse_stream_stop_message(&mut reader),
-            'c' => Self::parse_stream_commit_message(&mut reader),
-            'A' => Self::parse_stream_abort_message(&mut reader),
+            MESSAGE_TYPE_BEGIN => Self::parse_begin_message(&mut reader),
+            MESSAGE_TYPE_COMMIT => Self::parse_commit_message(&mut reader),
+            MESSAGE_TYPE_RELATION => Self::parse_relation_message(&mut reader),
+            MESSAGE_TYPE_INSERT => Self::parse_insert_message(&mut reader),
+            MESSAGE_TYPE_UPDATE => Self::parse_update_message(&mut reader),
+            MESSAGE_TYPE_DELETE => Self::parse_delete_message(&mut reader),
+            MESSAGE_TYPE_TRUNCATE => Self::parse_truncate_message(&mut reader),
+            MESSAGE_TYPE_STREAM_START => Self::parse_stream_start_message(&mut reader),
+            MESSAGE_TYPE_STREAM_STOP => Self::parse_stream_stop_message(&mut reader),
+            MESSAGE_TYPE_STREAM_COMMIT => Self::parse_stream_commit_message(&mut reader),
+            MESSAGE_TYPE_STREAM_ABORT => Self::parse_stream_abort_message(&mut reader),
             _ => {
                 warn!("Unknown message type: {}", message_type);
                 Err(ReplicationError::parse_with_context(
@@ -136,7 +159,7 @@ impl MessageParser {
         let transaction_id_or_oid = reader.read_u32()?;
 
         // Determine if this is a streaming transaction by checking what comes next
-        let (relation_id, is_stream, xid) = if reader.peek_u8()? == b'N' {
+        let (relation_id, is_stream, xid) = if reader.peek_u8()? == TUPLE_MARKER_NEW as u8 {
             // Not a streaming transaction
             (transaction_id_or_oid, false, None)
         } else {
@@ -147,7 +170,7 @@ impl MessageParser {
 
         // Expect 'N' marker for new tuple
         let marker = reader.read_u8()?;
-        if marker != b'N' {
+        if marker != TUPLE_MARKER_NEW as u8 {
             return Err(ReplicationError::parse_with_context(
                 "Expected 'N' marker in insert message",
                 format!("Found: {}", marker as char),
@@ -176,7 +199,9 @@ impl MessageParser {
         // Check if this is a streaming transaction by examining the next byte
         let next_byte = reader.peek_u8()?;
         let (relation_id, is_stream, xid) =
-            if next_byte == b'K' || next_byte == b'O' || next_byte == b'N' {
+            if next_byte == TUPLE_MARKER_KEY as u8
+                || next_byte == TUPLE_MARKER_OLD as u8
+                || next_byte == TUPLE_MARKER_NEW as u8 {
                 // Not a streaming transaction
                 (transaction_id_or_oid, false, None)
             } else {
@@ -189,13 +214,13 @@ impl MessageParser {
         let marker = reader.read_u8()? as char;
 
         let (key_type, old_tuple_data) = match marker {
-            'K' | 'O' => {
+            TUPLE_MARKER_KEY | TUPLE_MARKER_OLD => {
                 // Parse old tuple data
                 let tuple_data = Self::parse_tuple_data(reader)?;
 
                 // Expect 'N' marker for new tuple data
                 let new_marker = reader.read_u8()?;
-                if new_marker != b'N' {
+                if new_marker != TUPLE_MARKER_NEW as u8 {
                     return Err(ReplicationError::parse_with_context(
                         "Expected 'N' marker after old tuple data",
                         format!("Found: {}", new_marker as char),
@@ -204,7 +229,7 @@ impl MessageParser {
 
                 (Some(marker), Some(tuple_data))
             }
-            'N' => (None, None),
+            TUPLE_MARKER_NEW => (None, None),
             _ => {
                 return Err(ReplicationError::parse_with_context(
                     "Invalid marker in update message",
@@ -236,7 +261,8 @@ impl MessageParser {
 
         // Check if this is a streaming transaction by examining the next byte
         let next_byte = reader.peek_u8()?;
-        let (relation_id, is_stream, xid, key_type) = if next_byte == b'K' || next_byte == b'O' {
+        let (relation_id, is_stream, xid, key_type) = if next_byte == TUPLE_MARKER_KEY as u8
+            || next_byte == TUPLE_MARKER_OLD as u8 {
             // Not a streaming transaction
             let key_type = reader.read_u8()? as char;
             (transaction_id_or_oid, false, None, key_type)
@@ -384,28 +410,28 @@ impl MessageParser {
             let data_type = reader.read_u8()? as char;
 
             let column_data = match data_type {
-                'n' => {
+                COLUMN_TYPE_NULL => {
                     // NULL value
                     ColumnData {
-                        data_type: 'n',
+                        data_type: COLUMN_TYPE_NULL,
                         length: 0,
                         data: String::new(),
                     }
                 }
-                'u' => {
+                COLUMN_TYPE_UNCHANGED_TOAST => {
                     // Unchanged TOAST value
                     debug!("Unchanged TOAST value encountered");
                     ColumnData {
-                        data_type: 'u',
+                        data_type: COLUMN_TYPE_UNCHANGED_TOAST,
                         length: 0,
                         data: String::new(),
                     }
                 }
-                't' => {
+                COLUMN_TYPE_TEXT => {
                     // Text data with length prefix
                     let text_data = reader.read_length_prefixed_string()?;
                     ColumnData {
-                        data_type: 't',
+                        data_type: COLUMN_TYPE_TEXT,
                         length: text_data.len() as i32,
                         data: text_data,
                     }
@@ -429,5 +455,40 @@ impl MessageParser {
             columns,
             processed_length,
         })
+    }
+
+    /// Validate the message structure and provide better error context
+    fn validate_message_structure(
+        reader: &BufferReader,
+        expected_min_size: usize,
+        message_type: &str,
+    ) -> Result<()> {
+        if !reader.has_bytes(expected_min_size) {
+            return Err(ReplicationError::parse_with_context(
+                "Message too short",
+                format!(
+                    "Message type: {}, Expected: {}, Available: {}",
+                    message_type,
+                    expected_min_size,
+                    reader.remaining()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Extract detailed context information for error reporting
+    fn extract_error_context(
+        reader: &BufferReader,
+        operation: &str,
+        additional_info: Option<&str>,
+    ) -> String {
+        format!(
+            "Operation: {}, Position: {}, Remaining: {}{}",
+            operation,
+            reader.position(),
+            reader.remaining(),
+            additional_info.map(|info| format!(", Info: {}", info)).unwrap_or_default()
+        )
     }
 }

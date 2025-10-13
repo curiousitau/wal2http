@@ -149,6 +149,48 @@ impl<'a> BufferReader<'a> {
         Ok(string_value)
     }
 
+    /// Read a length-prefixed byte vector (32-bit length followed by data)
+    pub fn read_length_prefixed_bytes(&mut self) -> Result<Vec<u8>> {
+        let length = self.read_i32()?;
+
+        if length < 0 {
+            return Err(ReplicationError::parse("Negative byte array length"));
+        }
+
+        let length = length as usize;
+        if !self.has_bytes(length) {
+            return Err(ReplicationError::parse("Byte array data truncated"));
+        }
+
+        let bytes = self.buffer[self.position..self.position + length].to_vec();
+        self.position += length;
+        Ok(bytes)
+    }
+
+    /// Read all remaining bytes as a new buffer
+    pub fn read_remaining_bytes(&mut self) -> Result<Vec<u8>> {
+        let remaining = self.remaining();
+        if remaining == 0 {
+            return Ok(Vec::new());
+        }
+
+        let bytes = self.buffer[self.position..].to_vec();
+        self.position = self.buffer.len();
+        Ok(bytes)
+    }
+
+    /// Validate that the current position aligns with expected boundaries
+    pub fn validate_position(&self, context: &str) -> Result<()> {
+        if self.position > self.buffer.len() {
+            return Err(ReplicationError::parse_with_context(
+                "Buffer position exceeds bounds",
+                format!("Context: {}, Position: {}, Buffer size: {}",
+                    context, self.position, self.buffer.len())
+            ));
+        }
+        Ok(())
+    }
+
     /// Peek at the next byte without advancing position
     pub fn peek_u8(&self) -> Result<u8> {
         if !self.has_bytes(1) {
@@ -225,6 +267,52 @@ impl<'a> BufferWriter<'a> {
         }
         crate::utils::buf_send_i64(value, &mut self.buffer[self.position..]);
         self.position += 8;
+        Ok(())
+    }
+
+    /// Write a 32-bit unsigned integer at current position
+    pub fn write_u32(&mut self, value: u32) -> Result<()> {
+        if !self.has_space(4) {
+            return Err(ReplicationError::parse("Not enough space for u32"));
+        }
+        crate::utils::buf_send_u32(value, &mut self.buffer[self.position..]);
+        self.position += 4;
+        Ok(())
+    }
+
+    /// Write a 32-bit signed integer at current position
+    pub fn write_i32(&mut self, value: i32) -> Result<()> {
+        if !self.has_space(4) {
+            return Err(ReplicationError::parse("Not enough space for i32"));
+        }
+        crate::utils::buf_send_i32(value, &mut self.buffer[self.position..]);
+        self.position += 4;
+        Ok(())
+    }
+
+    /// Write a length-prefixed string (32-bit length followed by data)
+    pub fn write_length_prefixed_string(&mut self, value: &str) -> Result<()> {
+        let bytes = value.as_bytes();
+        let length = bytes.len() as i32;
+
+        if !self.has_space(4 + length as usize) {
+            return Err(ReplicationError::parse("Not enough space for length-prefixed string"));
+        }
+
+        self.write_i32(length)?;
+        self.buffer[self.position..self.position + bytes.len()].copy_from_slice(bytes);
+        self.position += bytes.len();
+        Ok(())
+    }
+
+    /// Write raw bytes
+    pub fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
+        if !self.has_space(bytes.len()) {
+            return Err(ReplicationError::parse("Not enough space for bytes"));
+        }
+
+        self.buffer[self.position..self.position + bytes.len()].copy_from_slice(bytes);
+        self.position += bytes.len();
         Ok(())
     }
 
