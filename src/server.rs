@@ -2,7 +2,7 @@
 //! Main server that handles connection, replication slot management, and message processing
 
 use crate::buffer::{BufferReader, BufferWriter};
-use crate::errors::Result;
+use crate::errors::{ReplicationError, Result};
 use crate::parser::MessageParser;
 use crate::types::*;
 use crate::utils::{format_timestamp_from_pg, system_time_to_postgres_timestamp, PGConnection, INVALID_XLOG_REC_PTR};
@@ -13,6 +13,18 @@ pub struct ReplicationServer {
     connection: PGConnection,
     config: ReplicationConfig,
     state: ReplicationState,
+    metrics: ReplicationMetrics,
+    shutdown_requested: bool,
+}
+
+/// Metrics for monitoring replication performance and health
+#[derive(Debug, Default)]
+pub struct ReplicationMetrics {
+    pub messages_processed: u64,
+    pub bytes_received: u64,
+    pub errors_count: u64,
+    pub last_message_time: Option<SystemTime>,
+    pub connection_attempts: u32,
 }
 
 impl ReplicationServer {
@@ -25,6 +37,8 @@ impl ReplicationServer {
             connection,
             config,
             state: ReplicationState::new(),
+            metrics: ReplicationMetrics::default(),
+            shutdown_requested: false,
         })
     }
 
@@ -111,35 +125,81 @@ impl ReplicationServer {
     }
 
     async fn replication_loop(&mut self) -> Result<()> {
+        let mut no_data_count = 0;
+        let max_no_data_cycles = 100; // ~1 second of no data
+
         loop {
+            // Check for shutdown request
+            if self.shutdown_requested {
+                info!("Shutdown requested, gracefully stopping replication loop");
+                break;
+            }
+
             self.check_and_send_feedback()?;
 
             match self.connection.get_copy_data(0)? {
                 None => {
-                    info!("No data received, continuing");
+                    no_data_count += 1;
+                    if no_data_count >= max_no_data_cycles {
+                        debug!("No data received for {} cycles, checking connection health", no_data_count);
+                        self.validate_connection()?;
+                        no_data_count = 0;
+                    }
                     tokio::time::sleep(Duration::from_millis(10)).await;
                     continue;
                 }
                 Some(data) => {
+                    no_data_count = 0; // Reset counter when we receive data
+
                     if data.is_empty() {
                         continue;
                     }
-                    
+
+                    // Update metrics
+                    self.metrics.bytes_received += data.len() as u64;
+                    self.metrics.last_message_time = Some(SystemTime::now());
+
+                    debug!(
+                        "PQgetCopyData returned: {}, data len: {}",
+                        data[0] as char,
+                        data.len()
+                    );
+
                     // please refer to https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-XLOGDATA
                     match data[0] as char {
                         'k' => {
                             self.process_keepalive_message(&data)?;
                         }
                         'w' => {
-                            self.process_wal_message(&data)?;
+                            if let Err(e) = self.process_wal_message(&data) {
+                                self.metrics.errors_count += 1;
+                                error!("Error processing WAL message: {}", e);
+
+                                // For certain errors, we might want to continue
+                                if self.should_continue_after_error(&e) {
+                                    warn!("Continuing after recoverable error: {}", e);
+                                    continue;
+                                } else {
+                                    return Err(e);
+                                }
+                            }
                         }
                         _ => {
                             warn!("Received unknown message type: {}", data[0] as char);
+                            self.metrics.errors_count += 1;
                         }
                     }
                 }
             }
         }
+
+        // Send final feedback before shutdown
+        if let Err(e) = self.send_feedback() {
+            warn!("Failed to send final feedback during shutdown: {}", e);
+        }
+
+        info!("Replication loop stopped gracefully");
+        Ok(())
     }
 
     fn process_keepalive_message(&mut self, data: &[u8]) -> Result<()> {
@@ -193,6 +253,7 @@ impl ReplicationServer {
         match MessageParser::parse_wal_message(message_data) {
             Ok(message) => {
                 self.process_replication_message(message)?;
+                self.metrics.messages_processed += 1;
             }
             Err(e) => {
                 error!("Failed to parse replication message: {}", e);
@@ -202,6 +263,46 @@ impl ReplicationServer {
 
         self.send_feedback()?;
         Ok(())
+    }
+
+    /// Determine if replication should continue after an error
+    fn should_continue_after_error(&self, error: &ReplicationError) -> bool {
+        match error {
+            // Continue after parsing errors that might be recoverable
+            crate::errors::ReplicationError::MessageParsing { .. } => true,
+            // Continue after protocol errors that don't break the connection
+            crate::errors::ReplicationError::Protocol { .. } => true,
+            // Don't continue after connection or buffer errors
+            crate::errors::ReplicationError::Connection { .. } => false,
+            crate::errors::ReplicationError::BufferOperation { .. } => false,
+            // Use judgment for other error types
+            _ => false,
+        }
+    }
+
+    /// Get current replication metrics
+    pub fn get_metrics(&self) -> &ReplicationMetrics {
+        &self.metrics
+    }
+
+    /// Check replication health status
+    pub fn is_healthy(&self) -> bool {
+        let now = SystemTime::now();
+
+        // Check if we've received messages recently (within last 30 seconds)
+        let recent_messages = self.metrics.last_message_time
+            .map(|time| now.duration_since(time).unwrap_or_default().as_secs() < 30)
+            .unwrap_or(false);
+
+        // Check error rate (less than 1% error rate is healthy)
+        let total_operations = self.metrics.messages_processed + self.metrics.errors_count;
+        let error_rate = if total_operations > 0 {
+            self.metrics.errors_count as f64 / total_operations as f64
+        } else {
+            0.0
+        };
+
+        recent_messages && error_rate < 0.01
     }
 
     fn process_replication_message(&mut self, message: ReplicationMessage) -> Result<()> {
@@ -365,12 +466,33 @@ impl ReplicationServer {
 
     fn info_tuple_data(&self, relation: &RelationInfo, tuple_data: &TupleData) -> Result<()> {
         for (i, column_data) in tuple_data.columns.iter().enumerate() {
-            if column_data.data_type == 'n' {
+            if column_data.data_type == crate::parser::COLUMN_TYPE_NULL {
                 continue; // Skip NULL values
             }
 
             if i < relation.columns.len() {
-                info!("{}: {} ", relation.columns[i].column_name, column_data.data);
+                let column_name = &relation.columns[i].column_name;
+
+                // Handle different data types more gracefully
+                match column_data.data_type {
+                    crate::parser::COLUMN_TYPE_TEXT => {
+                        // Limit data length to prevent log flooding
+                        let display_data = if column_data.data.len() > 200 {
+                            format!("{}... (truncated)", &column_data.data[..200])
+                        } else {
+                            column_data.data.clone()
+                        };
+                        info!("{}: {} ", column_name, display_data);
+                    }
+                    crate::parser::COLUMN_TYPE_UNCHANGED_TOAST => {
+                        info!("{}: <TOASTED> ", column_name);
+                    }
+                    _ => {
+                        info!("{}: <UNKNOWN_TYPE> ", column_name);
+                    }
+                }
+            } else {
+                warn!("Column index {} exceeds relation column count {}", i, relation.columns.len());
             }
         }
         Ok(())
@@ -397,8 +519,15 @@ impl ReplicationServer {
             writer.bytes_written()
         };
 
-        self.connection.put_copy_data(&reply_buf[..bytes_written])?;
-        self.connection.flush()?;
+        if let Err(e) = self.connection.put_copy_data(&reply_buf[..bytes_written]) {
+            error!("Failed to send feedback: {}", e);
+            return Err(e);
+        }
+
+        if let Err(e) = self.connection.flush() {
+            error!("Failed to flush feedback: {}", e);
+            return Err(e);
+        }
 
         debug!("Sent feedback with LSN: {}", self.state.received_lsn);
         Ok(())
@@ -409,9 +538,58 @@ impl ReplicationServer {
         if now.duration_since(self.state.last_feedback_time)
             > Duration::from_secs(self.config.feedback_interval_secs)
         {
-            self.send_feedback()?;
+            if let Err(e) = self.send_feedback() {
+                warn!("Failed to send periodic feedback: {}", e);
+                // Don't return error here, as we'll try again next time
+            }
             self.state.last_feedback_time = now;
         }
         Ok(())
+    }
+
+    /// Validate connection health
+    fn validate_connection(&self) -> Result<()> {
+        // Simple validation by checking if we can get connection status
+        // This is a basic check - more sophisticated checks could be added
+        if self.metrics.errors_count > 100 {
+            let total_ops = self.metrics.messages_processed + self.metrics.errors_count;
+            if total_ops > 0 {
+                let error_rate = self.metrics.errors_count as f64 / total_ops as f64;
+                if error_rate > 0.1 {
+                    return Err(crate::errors::ReplicationError::protocol(
+                        format!("High error rate detected: {:.2}%", error_rate * 100.0)
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Request graceful shutdown of the replication server
+    pub fn request_shutdown(&mut self) {
+        info!("Graceful shutdown requested for replication server");
+        self.shutdown_requested = true;
+    }
+
+    /// Check if shutdown has been requested
+    pub fn is_shutdown_requested(&self) -> bool {
+        self.shutdown_requested
+    }
+
+    /// Reset the shutdown flag (useful for restarting)
+    pub fn reset_shutdown_flag(&mut self) {
+        self.shutdown_requested = false;
+    }
+
+    /// Get a summary of replication status
+    pub fn get_status_summary(&self) -> String {
+        format!(
+            "Replication Status - Messages: {}, Bytes: {}, Errors: {}, Healthy: {}, Shutdown: {}",
+            self.metrics.messages_processed,
+            self.metrics.bytes_received,
+            self.metrics.errors_count,
+            self.is_healthy(),
+            self.shutdown_requested
+        )
     }
 }
