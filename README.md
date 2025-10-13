@@ -11,6 +11,7 @@ A Rust implementation of a PostgreSQL logical replication client that connects t
 - **Streaming Transaction Support**: Handles both regular and streaming (large) transactions
 - **Built with libpq-sys**: Uses low-level PostgreSQL libpq bindings for maximum performance and control
 - **Comprehensive Logging**: Uses tracing for structured logging and debugging
+- **Multiple Event Sinks**: Supports HTTP endpoints, Hook0, and STDOUT output
 
 ## Prerequisites
 
@@ -83,11 +84,50 @@ brew install postgresql
 
 ```bash
 # Set environment variables
-export slot_name="my_slot"
-export pub_name="my_publication"
+export DATABASE_URL="postgresql://user:password@localhost:5432/dbname"
+export SLOT_NAME="my_slot"
+export PUB_NAME="my_publication"
 
 # Run the replication checker
-./target/release/pg_replica_rs user azureuser replication database host 127.0.0.1 dbname postgres port 5432
+./target/release/wal2http
+```
+
+### Event Sink Examples
+
+#### HTTP Event Sink
+```bash
+export DATABASE_URL="postgresql://user:password@localhost:5432/dbname"
+export EVENT_SINK="http"
+export HTTP_ENDPOINT_URL="https://your-webhook-endpoint.com/events"
+export SLOT_NAME="my_slot"
+export PUB_NAME="my_publication"
+
+./target/release/wal2http
+```
+
+#### Hook0 Event Sink
+```bash
+export DATABASE_URL="postgresql://user:password@localhost:5432/dbname"
+export EVENT_SINK="hook0"
+export HOOK0_API_URL="https://your-hook0-instance.com"
+export HOOK0_APPLICATION_ID="12345678-1234-1234-1234-123456789012"
+export HOOK0_API_TOKEN="your-api-token"
+export SLOT_NAME="my_slot"
+export PUB_NAME="my_publication"
+
+./target/release/wal2http
+```
+
+#### STDOUT Event Sink (Default)
+```bash
+export DATABASE_URL="postgresql://user:password@localhost:5432/dbname"
+export SLOT_NAME="my_slot"
+export PUB_NAME="my_publication"
+
+# Or explicitly set:
+export EVENT_SINK="stdout"
+
+./target/release/wal2http
 ```
 
 ### Command Line Arguments
@@ -100,8 +140,21 @@ pg_replica_rs user <username> password <password> host <hostname> port <port> db
 
 ### Environment Variables
 
-- `slot_name`: Name of the replication slot to create/use (default: "sub")
-- `pub_name`: Name of the publication to subscribe to (default: "pub")
+#### Core Configuration
+- `DATABASE_URL`: PostgreSQL connection string (required)
+- `SLOT_NAME`: Name of the replication slot to create/use (default: "sub")
+- `PUB_NAME`: Name of the publication to subscribe to (default: "pub")
+
+#### Event Sink Configuration
+- `EVENT_SINK`: Event sink type - "http", "hook0", or "stdout" (optional, defaults to "stdout")
+
+##### HTTP Event Sink (when EVENT_SINK=http)
+- `HTTP_ENDPOINT_URL`: URL for HTTP event sink (required)
+
+##### Hook0 Event Sink (when EVENT_SINK=hook0)
+- `HOOK0_API_URL`: Hook0 API URL (required)
+- `HOOK0_APPLICATION_ID`: Hook0 application UUID (required)
+- `HOOK0_API_TOKEN`: Hook0 API token (required)
 
 ### Logging
 
@@ -258,6 +311,37 @@ sequenceDiagram
 3. **Post-Processing Feedback**: Sent after each WAL message is successfully processed and delivered to event sink
 
 The feedback mechanism ensures PostgreSQL knows which LSN positions have been received and applied, preventing unnecessary retransmission and maintaining replication consistency.
+
+## Roadmap
+
+### 🚀 Planned Features
+
+- **JSONL STDOUT Formatting**: Output events in JSON Lines format for better machine parsing and integration with log aggregation tools
+- **Enhanced Error Recovery**: Implement automatic reconnection and retry logic with exponential backoff
+- **Replication Slot Management**: Automatic slot cleanup, status monitoring, and lifecycle management
+- **Binary Type Support**: Proper handling of PostgreSQL binary data types (bytea, uuid, etc.)
+- **Configuration File Support**: Support for TOML/YAML configuration files in addition to environment variables
+- **Metrics and Monitoring**: Prometheus metrics endpoint for monitoring replication health and performance
+- **TLS/SSL Support**: Encrypted connections to PostgreSQL and HTTP endpoints
+- **Message Filtering**: Configurable filtering of events based on table, operation type, or content
+- **Batch Processing**: Batch multiple events for improved HTTP endpoint performance
+- **Kubernetes Integration**: Helm charts and Kubernetes deployment manifests
+
+### 🔧 Technical Improvements
+
+- **Memory Optimization**: Reduce memory footprint for high-throughput scenarios
+- **Performance Tuning**: Optimize parsing and event processing for lower latency
+- **Testing Infrastructure**: Comprehensive integration tests and performance benchmarks
+- **Documentation**: API documentation and integration guides
+
+### 📋 Considered Features
+
+- **Multi-Source Replication**: Connect to multiple PostgreSQL databases simultaneously
+- **Data Transformation**: Built-in data transformation and mapping capabilities
+- **Storage Backends**: Direct integration with databases or message queues
+- **Web Dashboard**: Web-based monitoring and management interface
+
+---
 
 ## Supported Operations
 

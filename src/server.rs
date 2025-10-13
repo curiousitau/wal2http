@@ -32,52 +32,80 @@ pub struct ReplicationServer {
 }
 
 impl ReplicationServer {
+    /// Creates a new replication server with the given configuration
+    ///
+    /// Establishes database connection and initializes the appropriate event sink
+    /// based on configuration (Hook0, HTTP endpoint, or STDOUT fallback).
     pub fn new(config: ReplicationConfig) -> ReplicationResult<Self> {
         info!("Connecting to database: {}", config.connection_string);
         let connection = PGConnection::connect(&config.connection_string)?;
         info!("Successfully connected to database server");
 
-        let event_sink = if let (Some(api_url), Some(app_id), Some(api_token)) = (
-            config.hook0_api_url.as_ref(),
-            config.hook0_application_id,
-            config.hook0_api_token.as_ref(),
-        ) {
-            info!("Initializing Hook0 event sink with URL: {}", api_url);
-            let hook0_config = Hook0EventSinkConfig {
-                api_url: api_url.clone(),
-                application_id: app_id,
-                api_token: api_token.clone(),
-            };
-            match hook0::Hook0EventSink::new(hook0_config) {
-                Ok(sink) => {
-                    info!("Successfully initialized Hook0 event sink");
-                    Some(Arc::new(sink) as Arc<dyn EventSink + Send + Sync>)
-                }
-                Err(e) => {
-                    error!("Failed to initialize Hook0 event sink: {}", e);
-                    return Err(crate::errors::ReplicationError::protocol(e));
-                }
-            }
-        } else if let Some(url) = config.http_endpoint_url.as_ref() {
-            info!("Initializing HTTP event sink with URL: {}", url);
-            let http_config = HttpEventSinkConfig {
-                endpoint_url: url.clone(),
-            };
-            match HttpEventSink::new(http_config) {
-                Ok(sink) => {
-                    info!("Successfully initialized HTTP event sink");
-                    Some(Arc::new(sink) as Arc<dyn EventSink + Send + Sync>)
-                }
-                Err(e) => {
-                    error!("Failed to initialize HTTP event sink: {}", e);
-                    return Err(crate::errors::ReplicationError::protocol(e));
+        // Configure event sink based on provided configuration
+        let event_sink = match config.event_sink.as_ref().map(|s| s.to_lowercase()).as_deref() {
+            Some("hook0") => {
+                // Hook0 event sink integration
+                if let (Some(api_url), Some(app_id), Some(api_token)) = (
+                    config.hook0_api_url.as_ref(),
+                    config.hook0_application_id,
+                    config.hook0_api_token.as_ref(),
+                ) {
+                    info!("Initializing Hook0 event sink with URL: {}", api_url);
+                    let hook0_config = Hook0EventSinkConfig {
+                        api_url: api_url.clone(),
+                        application_id: app_id,
+                        api_token: api_token.clone(),
+                    };
+                    match hook0::Hook0EventSink::new(hook0_config) {
+                        Ok(sink) => {
+                            info!("Successfully initialized Hook0 event sink");
+                            Some(Arc::new(sink) as Arc<dyn EventSink + Send + Sync>)
+                        }
+                        Err(e) => {
+                            error!("Failed to initialize Hook0 event sink: {}", e);
+                            return Err(crate::errors::ReplicationError::protocol(e));
+                        }
+                    }
+                } else {
+                    error!("Hook0 event sink specified but missing required configuration (api_url, application_id, or api_token)");
+                    return Err(crate::errors::ReplicationError::protocol("Missing Hook0 configuration"));
                 }
             }
-        } else {
-            info!("No event sink configured, events will be sent to STDOUT");
-
-            Some(Arc::new(crate::event_sink::stdout::StdoutEventSink {})
-                as Arc<dyn EventSink + Send + Sync>)
+            Some("http") => {
+                // Generic HTTP endpoint sink
+                if let Some(url) = config.http_endpoint_url.as_ref() {
+                    info!("Initializing HTTP event sink with URL: {}", url);
+                    let http_config = HttpEventSinkConfig {
+                        endpoint_url: url.clone(),
+                    };
+                    match HttpEventSink::new(http_config) {
+                        Ok(sink) => {
+                            info!("Successfully initialized HTTP event sink");
+                            Some(Arc::new(sink) as Arc<dyn EventSink + Send + Sync>)
+                        }
+                        Err(e) => {
+                            error!("Failed to initialize HTTP event sink: {}", e);
+                            return Err(crate::errors::ReplicationError::protocol(e));
+                        }
+                    }
+                } else {
+                    error!("HTTP event sink specified but missing HTTP_ENDPOINT_URL");
+                    return Err(crate::errors::ReplicationError::protocol("Missing HTTP endpoint URL"));
+                }
+            }
+            Some("stdout") | None => {
+                // STDOUT for development/testing or when no event sink is specified
+                info!("Events will be sent to STDOUT");
+                Some(Arc::new(crate::event_sink::stdout::StdoutEventSink {})
+                    as Arc<dyn EventSink + Send + Sync>)
+            }
+            Some(service) => {
+                // This should be caught by validation, but handle it defensively
+                error!("Unsupported event sink: {}", service);
+                return Err(crate::errors::ReplicationError::protocol(
+                    format!("Unsupported event sink: {}", service)
+                ));
+            }
         };
 
         Ok(Self {

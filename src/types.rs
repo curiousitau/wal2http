@@ -298,6 +298,7 @@ pub struct ReplicationConfig {
     pub publication_name: String,
     pub slot_name: String,
     pub feedback_interval_secs: u64,
+    pub event_sink: Option<String>,
     pub http_endpoint_url: Option<String>,
     pub hook0_api_url: Option<String>,
     pub hook0_application_id: Option<Uuid>,
@@ -310,6 +311,7 @@ impl ReplicationConfig {
         connection_string: String,
         publication_name: String,
         slot_name: String,
+        event_sink: Option<String>,
         http_endpoint_url: Option<String>,
         hook0_api_url: Option<String>,
         hook0_application_id: Option<Uuid>,
@@ -362,6 +364,19 @@ impl ReplicationConfig {
             ));
         }
 
+        // Validate event sink if provided
+        if let Some(ref service) = event_sink {
+            let service_lower = service.to_lowercase();
+            if !service_lower.is_empty()
+                && service_lower != "http"
+                && service_lower != "hook0"
+                && service_lower != "stdout" {
+                return Err(crate::errors::ReplicationError::config(
+                    "Event sink must be one of: 'http', 'hook0', or 'stdout'",
+                ));
+            }
+        }
+
         // Validate Hook0 configuration if provided
         if let Some(ref url) = hook0_api_url
             && !url.trim().is_empty()
@@ -392,6 +407,7 @@ impl ReplicationConfig {
             publication_name,
             slot_name,
             feedback_interval_secs: 1, // Send feedback every second
+            event_sink,
             http_endpoint_url,
             hook0_api_url,
             hook0_application_id,

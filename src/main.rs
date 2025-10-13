@@ -75,6 +75,7 @@ struct Args {
 /// - `DATABASE_URL`: PostgreSQL connection string (required)
 /// - `SLOT_NAME`: Replication slot name (defaults to "sub")
 /// - `PUB_NAME`: Publication name (defaults to "pub")
+/// - `EVENT_SINK`: Event sink type - "http", "hook0", or "stdout" (optional, defaults to "stdout")
 /// - `HTTP_ENDPOINT_URL`: URL for HTTP event sink (optional, required when using "http" service)
 /// - `HOOK0_API_URL`: Hook0 API URL (optional, required when using "hook0" service)
 /// - `HOOK0_APPLICATION_ID`: Hook0 application UUID (optional, required when using "hook0" service)
@@ -118,6 +119,11 @@ async fn main() -> ReplicationResult<()> {
 
     info!("Connection string: {}", connection_string);
 
+    // Load event sink specification from environment variable
+    // This determines which event sink to use
+    let event_sink = env::var("EVENT_SINK").ok();
+    info!("Event sink from env: {:?}", event_sink);
+
     // Load optional sink configuration from environment variables
     // These determine where replication events are sent
     let http_endpoint_url = env::var("HTTP_ENDPOINT_URL").ok();
@@ -139,6 +145,7 @@ async fn main() -> ReplicationResult<()> {
         connection_string,
         publication_name,
         slot_name,
+        event_sink,
         http_endpoint_url,
         hook0_api_url,
         hook0_application_id,
