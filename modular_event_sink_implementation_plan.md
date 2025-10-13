@@ -2,23 +2,29 @@
 
 ## 1. Introduction
 
-This document outlines the implementation plan for creating a modular event sink system in the `wal2http` project. The goal is to:
+This document outlines the implementation plan for creating a modular event sink system in the `wal2http` project.
 
-1. Define a common event sink trait/interface
-2. Allow multiple event sink implementations (HTTP, Hook0, etc.)
-3. Maintain backward compatibility
-4. Keep core replication logic separate from event sinks
+**Status: ✅ COMPLETED**
 
-## 2. High-Level Architecture
+The modular event sink system has been successfully implemented with the following achievements:
+
+1. ✅ Defined a common event sink trait/interface
+2. ✅ Implemented multiple event sink types (HTTP, Hook0, STDOUT)
+3. ✅ Maintained backward compatibility
+4. ✅ Kept core replication logic separate from event sinks
+5. ✅ Added email notification capabilities
+6. ✅ Implemented comprehensive error handling and retry logic
+
+## 2. Implemented Architecture
 
 ```mermaid
 classDiagram
 class ReplicationServer {
   +config: ReplicationConfig
   +state: ReplicationState
-  +event_sinks: Vec<Box<dyn EventSink>>
+  +event_sink: Option<Arc<dyn EventSink + Send + Sync>>
   +process_replication_message(message: ReplicationMessage) -> Result<()>
-  +register_event_sink(sink: Box<dyn EventSink>) -> Result<()>
+  +new(config: ReplicationConfig) -> Result<()>
 }
 
 class ReplicationConfig {
@@ -26,72 +32,65 @@ class ReplicationConfig {
   +publication_name: String
   +slot_name: String
   +feedback_interval_secs: u64
-  +event_sinks: Vec<EventSinkConfig>
+  +http_endpoint_url: Option<String>
+  +hook0_api_url: Option<String>
+  +hook0_application_id: Option<Uuid>
+  +hook0_api_token: Option<String>
 }
 
 class ReplicationState {
   +relations: HashMap<Oid, RelationInfo>
   +received_lsn: u64
   +flushed_lsn: u64
+  +applied_lsn: u64
   +last_feedback_time: Instant
   +get_relation(oid: Oid) -> Option<&RelationInfo>
+  +update_applied_lsn(lsn: u64)
 }
 
 class EventSink {
   <<interface>>
-  +on_event(message: ReplicationMessage) -> Result<()>
+  +send_event(event: &ReplicationMessage) -> Result<()>
 }
 
-class EventSinkConfig {
-  <<enum>>
-  Http(HttpSinkConfig)
-  Hook0(Hook0SinkConfig)
+class EmailConfig {
+  +smtp_host: String
+  +smtp_port: u16
+  +smtp_username: String
+  +smtp_password: String
+  +from_email: String
+  +to_email: String
 }
 
-class HttpSinkConfig {
-  +enabled: bool
-  +url: String
-  +method: String
-  +timeout: u64
-  +retries: u32
-  +auth_header: Option<String>
-  +event_format: String
+class HttpEventSinkConfig {
+  +endpoint_url: String
 }
 
-class Hook0SinkConfig {
-  +enabled: bool
+class Hook0EventSinkConfig {
   +api_url: String
-  +api_key: String
-  +workspace_id: String
-  +project_id: String
-  +event_format: String
+  +application_id: Uuid
+  +api_token: String
 }
 
 class HttpEventSink {
-  +config: HttpSinkConfig
-  +event_processor: EventProcessor
-  +http_client: HttpClient
-  +on_event(message: ReplicationMessage) -> Result<()>
+  +config: HttpEventSinkConfig
+  +http_client: Arc<Mutex<Client>>
+  +email_config: Option<EmailConfig>
+  +send_event(event: &ReplicationMessage) -> Result<()>
+  +send_email_notification(message: &str)
 }
 
 class Hook0EventSink {
-  +config: Hook0SinkConfig
-  +event_processor: EventProcessor
-  +hook0_client: Hook0Client
-  +on_event(message: ReplicationMessage) -> Result<()>
+  +config: Hook0EventSinkConfig
+  +send_event(event: &ReplicationMessage) -> Result<()>
 }
 
-class EventProcessor {
-  +process_event(message: ReplicationMessage) -> Result<Event>
-  +format_payload(event: Event) -> String
+class StdoutEventSink {
+  +send_event(event: &ReplicationMessage) -> Result<()>
 }
 
-class HttpClient {
-  +send_request(url: String, method: String, payload: String, headers: Option<HashMap<String, String>>) -> Result<String>
-}
-
-class Hook0Client {
-  +send_event(event: Event, config: &Hook0SinkConfig) -> Result<String>
+class EventFormatter {
+  +format(event: &ReplicationMessage) -> serde_json::Value
 }
 
 class ReplicationMessage {
@@ -111,138 +110,226 @@ class ReplicationMessage {
 
 ReplicationServer --> ReplicationConfig : uses
 ReplicationServer --> ReplicationState : manages
-ReplicationServer --> EventSink : registers multiple
+ReplicationServer --> EventSink : selects one
 HttpEventSink --|> EventSink : implements
 Hook0EventSink --|> EventSink : implements
-EventSinkConfig --> HttpSinkConfig : contains
-EventSinkConfig --> Hook0SinkConfig : contains
-EventProcessor --> ReplicationState : accesses
-EventProcessor --> Event : creates
-HttpClient --> ReplicationMessage : processes
-Hook0Client --> ReplicationMessage : processes
+StdoutEventSink --|> EventSink : implements
+HttpEventSink --> EmailConfig : uses for notifications
+HttpEventSink --> EventFormatter : uses
+Hook0EventSink --> EventFormatter : uses
+StdoutEventSink --> EventFormatter : uses
 ```
 
-## 3. Component Descriptions
+## 3. Implemented Components
 
-### 3.1 ReplicationServer
+### 3.1 ReplicationServer ✅
 
-The core component that handles PostgreSQL replication. It will be modified to:
-- Support multiple event sinks via the `EventSink` trait
-- Register event sinks during initialization
-- Notify all registered event sinks of replication events
+The core component that handles PostgreSQL replication. Successfully modified to:
+- Support single event sink selection via the `EventSink` trait
+- Select appropriate sink based on configuration priority
+- Process events sequentially and asynchronously
+- Track applied LSN based on sink success/failure
 
-### 3.2 EventSink Trait
+### 3.2 EventSink Trait ✅
 
-A common interface that all event sinks must implement:
+A common async interface that all event sinks implement:
 ```rust
+#[async_trait]
 pub trait EventSink: Send + Sync {
-    fn on_event(&self, message: ReplicationMessage) -> Result<()>;
+    async fn send_event(&self, event: &ReplicationMessage) -> ReplicationResult<()>;
 }
 ```
 
-### 3.3 EventSinkConfig Enum
+### 3.3 ReplicationState Enhanced ✅
 
-A configuration enum that supports multiple event sink types:
-```rust
-pub enum EventSinkConfig {
-    Http(HttpSinkConfig),
-    Hook0(Hook0SinkConfig),
-}
-```
+Enhanced with applied LSN tracking:
+- Added `applied_lsn` field for successful event delivery tracking
+- Only updated after successful sink delivery
+- Prevents data loss during sink failures
 
-### 3.4 HttpEventSink
+### 3.4 HttpEventSink ✅
 
-Handles sending replication events to an HTTP endpoint:
-- Implements the `EventSink` trait
-- Uses `HttpClient` for HTTP communication
-- Processes events via `EventProcessor`
+Handles sending replication events to HTTP endpoints:
+- Implements the `EventSink` trait with async support
+- Uses `reqwest::Client` for HTTP communication
+- Implements retry logic with exponential backoff (5 retries, 1s-30s)
+- Sends email notifications when all retries are exhausted
+- Processes events via `EventFormatter`
 
-### 3.5 Hook0EventSink
+### 3.5 Hook0EventSink ✅
 
 Handles sending replication events to Hook0 API:
+- Implements the `EventSink` trait with async support
+- Uses `hook0-client` library for API communication
+- Handles custom event table schema decoding
+- Simplifies metadata and labels processing
+- Processes events via `EventFormatter`
+
+### 3.6 StdoutEventSink ✅
+
+Default fallback sink for development and debugging:
 - Implements the `EventSink` trait
-- Uses `Hook0Client` for API communication
-- Processes events via `EventProcessor`
+- Prints formatted events to console
+- Always available as ultimate fallback
 
-### 3.6 EventProcessor
+### 3.7 EventFormatter ✅
 
-A shared component that processes replication messages into a common event format:
-- Maps `ReplicationMessage` to a generic `Event` struct
-- Formats events for different sink types
-- Provides a common interface for event processing
+A shared component that formats replication messages into JSON:
+- Converts all `ReplicationMessage` variants to JSON
+- Handles PostgreSQL type conversions
+- Maintains event sequence and metadata
+- Used by all sink implementations
 
-### 3.7 HttpClient and Hook0Client
+### 3.8 EmailConfig ✅
 
-Separate clients for HTTP and Hook0 API communication:
-- `HttpClient`: Handles HTTP requests with configurable method, timeout, retries, etc.
-- `Hook0Client`: Handles Hook0 API requests with authentication and event formatting
+Configuration for email notifications:
+- Loads SMTP settings from environment variables
+- Validates email configuration
+- Used by HttpEventSink for failure notifications
 
-## 4. Planned File Structure Changes
+## 4. Implemented File Structure
 
 ```
 src/
-├── event_sinks/
-│   ├── mod.rs
-│   ├── event_processor.rs
-│   ├── http_sink.rs
-│   ├── hook0_sink.rs
-│   └── traits.rs
-├── config.rs
-├── server.rs
-└── types.rs
+├── event_sink/
+│   ├── mod.rs                    # EventSink trait definition
+│   ├── event_formatter.rs        # JSON event formatting
+│   ├── http.rs                   # HTTP event sink implementation
+│   ├── hook0.rs                  # Hook0 event sink implementation
+│   ├── hook0_error.rs            # Hook0-specific error handling
+│   ├── pg_type_conversion.rs     # PostgreSQL type conversions
+│   └── stdout.rs                 # STDOUT event sink implementation
+├── email_config.rs               # Email notification configuration
+├── types.rs                      # Enhanced with event sink config
+├── server.rs                     # Updated with sink selection logic
+├── main.rs                       # Environment variable configuration
+└── buffer.rs, errors.rs, parser.rs, utils.rs  # Updated for integration
 ```
 
-## 5. Implementation Steps
+## 5. Completed Implementation Steps
 
-1. **Define EventSink Trait**: Create a common interface for all event sinks
-2. **Create EventProcessor**: Extract and generalize event processing logic
-3. **Implement HttpEventSink**: Create HTTP event sink implementation
-4. **Implement Hook0EventSink**: Create Hook0 event sink implementation
-5. **Update ReplicationServer**: Modify to support multiple event sinks
-6. **Update Configuration**: Extend `ReplicationConfig` to support multiple sinks
-7. **Add Dependency for Hook0**: Add `hook0-client` crate to `Cargo.toml`
-8. **Create Tests**: Add unit and integration tests for the new architecture
+✅ **1. Define EventSink Trait**: Created async trait interface for all event sinks
+✅ **2. Create EventFormatter**: Implemented JSON formatting for all replication messages
+✅ **3. Implement HttpEventSink**: Created HTTP event sink with retry logic and email notifications
+✅ **4. Implement Hook0EventSink**: Created Hook0 event sink with API integration
+✅ **5. Implement StdoutEventSink**: Created fallback STDOUT sink
+✅ **6. Update ReplicationServer**: Modified to support single sink selection with applied LSN tracking
+✅ **7. Update Configuration**: Extended `ReplicationConfig` with environment variable support
+✅ **8. Add Dependencies**: Added `reqwest`, `lettre`, `async-trait`, `uuid`, `hook0-client`
+✅ **9. Create Test Infrastructure**: Added test servers and scripts for validation
 
-## 6. Configuration Changes
+## 6. Implemented Configuration System
 
-Update the configuration system to support multiple event sinks:
-```toml
-# Example configuration
-[event_sinks]
-http = { url = "http://localhost:3000/events", enabled = true }
-hook0 = {
-    api_url = "https://api.hook0.com",
-    api_key = "sk_test_...",
-    workspace_id = "ws_...",
-    project_id = "proj_...",
-    enabled = true
-}
+Environment variable-based configuration for sink selection:
+
+**Required Configuration:**
+```bash
+DATABASE_URL=postgresql://user:password@localhost:5432/dbname
+SLOT_NAME=replication_slot_name
+PUB_NAME=publication_name
 ```
 
-## 7. Dependency Updates
+**HTTP Sink Configuration:**
+```bash
+HTTP_ENDPOINT_URL=http://localhost:3000/events
+```
 
-Add the `hook0-client` crate to `Cargo.toml`:
+**Hook0 Sink Configuration:**
+```bash
+HOOK0_API_URL=https://api.hook0.com
+HOOK0_APPLICATION_ID=550e8400-e29b-41d4-a716-446655440000
+HOOK0_API_TOKEN=sk_test_...
+```
+
+**Email Notification Configuration:**
+```bash
+EMAIL_SMTP_HOST=smtp.gmail.com
+EMAIL_SMTP_PORT=587
+EMAIL_SMTP_USERNAME=your-email@gmail.com
+EMAIL_SMTP_PASSWORD=your-app-password
+EMAIL_FROM=your-email@gmail.com
+EMAIL_TO=admin@yourcompany.com
+```
+
+**Sink Selection Priority:**
+1. Hook0 (if all Hook0 variables configured)
+2. HTTP (if HTTP_ENDPOINT_URL configured)
+3. STDOUT (default fallback)
+
+## 7. Implemented Dependencies
+
+Added to `Cargo.toml`:
 ```toml
 [dependencies]
-hook0-client = "0.12"
+reqwest = { version = "0.12.23", features = ["json", "stream"] }
+lettre = { version = "0.11", features = ["smtp-transport", "builder"] }
+async-trait = "0.1.88"
+uuid = { version = "1.18.0", features = ["v4"] }
+hook0-client = { rev = "d7642e4ed32e9851eb67114053afcbd9cf9ab614", git = "https://github.com/hook0/hook0", features = ["producer"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 ```
 
-## 8. Backward Compatibility
+## 8. Backward Compatibility ✅
 
-- HTTP event sink will remain the default implementation
-- Existing HTTP configuration will be supported via the new configuration format
-- Event sinks are optional and disabled by default
-- Core replication logic remains unchanged
+- All event sinks are optional and disabled by default
+- Core replication logic remains unchanged when sinks not configured
+- STDOUT sink always available as fallback
+- Environment variable configuration allows gradual adoption
+- No breaking changes to existing replication functionality
 
-## 9. Testing Plan
+## 9. Implemented Testing Infrastructure ✅
 
-1. **Unit Tests**: Test individual event sink implementations
-2. **Integration Tests**: Test multiple event sinks working together
-3. **Performance Tests**: Measure impact on replication performance
-4. **Configuration Tests**: Test various configuration scenarios
+**Test Files Added:**
+- `test_http_server.js` - Node.js HTTP server for testing HTTP sink
+- `test_hook0_server.js` - Mock Hook0 API server for testing
+- `test_email_server.js` - Email server for testing notifications
+- `test_http_sink.sh` - Automated test script for HTTP sink
+- `test_hook0_sink.sh` - Automated test script for Hook0 sink
 
-## 10. Documentation
+**Testing Capabilities:**
+1. **End-to-End Testing**: Complete event flow validation
+2. **Sink-Specific Testing**: Individual sink validation
+3. **Error Scenario Testing**: Failure handling and retry validation
+4. **Integration Testing**: Sink selection and configuration testing
 
-- Update `README.md` with new configuration options
-- Add documentation for Hook0 event sink
-- Provide examples of multiple event sink configurations
+## 10. Documentation Status ✅
+
+**Documentation Files Created/Updated:**
+- `README.md` - Updated with comprehensive architecture and sequence diagrams
+- `http_event_sink_architecture.md` - Detailed architecture documentation
+- `modular_event_sink_implementation_plan.md` - Implementation status and details
+- Additional design documents for planning and reference
+
+**Documentation Includes:**
+- Environment variable configuration examples
+- Sink selection priority explanation
+- Error handling and retry logic details
+- Performance and security considerations
+- Testing infrastructure setup instructions
+
+## 11. Summary
+
+The modular event sink system has been **successfully implemented** with the following key achievements:
+
+### ✅ Core Features Delivered
+- **Async EventSink Trait**: Common interface for all sink implementations
+- **Multiple Sink Types**: HTTP, Hook0, and STDOUT sinks fully implemented
+- **Sink Selection Logic**: Automatic selection based on configuration priority
+- **Applied LSN Tracking**: Reliable event delivery tracking
+- **Retry Logic**: Exponential backoff with email notifications
+- **Email Notifications**: Configurable failure alerts
+
+### ✅ Architecture Benefits
+- **Modular Design**: Easy to add new sink types
+- **Backward Compatible**: No breaking changes to existing functionality
+- **Graceful Degradation**: Replication continues even if sinks fail
+- **Configuration-Driven**: Environment variable based configuration
+- **Production Ready**: Comprehensive error handling and logging
+
+### ✅ Testing & Documentation
+- **Complete Test Infrastructure**: Test servers and scripts for validation
+- **Comprehensive Documentation**: Architecture, implementation, and usage guides
+- **Examples**: Configuration examples and setup instructions
+
+The implementation provides a robust, extensible foundation for event processing in the wal2http PostgreSQL replication system while maintaining reliability and performance.
