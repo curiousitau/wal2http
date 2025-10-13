@@ -13,9 +13,7 @@ use crate::event_sink::hook0::{self, Hook0EventSinkConfig};
 use crate::event_sink::http::{HttpEventSink, HttpEventSinkConfig};
 use crate::parser::MessageParser;
 use crate::types::*;
-use crate::utils::{
-    PGConnection, system_time_to_postgres_timestamp,
-};
+use crate::utils::{PGConnection, system_time_to_postgres_timestamp};
 use libpq_sys::ExecStatusType;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -414,14 +412,14 @@ impl ReplicationServer {
             debug!("Sending event to event sink: {:?}", message);
 
             // Process event sequentially - wait for successful delivery before continuing
-                match event_sink.send_event(&message).await {
+            match event_sink.send_event(&message).await {
                 Ok(()) => {
                     debug!(
                         "Successfully sent event to sink for LSN: {:x}",
                         self.state.received_lsn
                     );
                     // Only update applied LSN after successful event delivery
-                      self.state.update_applied_lsn(self.state.received_lsn);
+                    self.state.update_applied_lsn(self.state.received_lsn);
                 }
                 Err(e) => {
                     error!("Failed to send event to event sink: {}", e);
@@ -433,7 +431,7 @@ impl ReplicationServer {
             }
         } else {
             // No event sink configured, so we can consider this immediately "applied"
-              self.state.update_applied_lsn(self.state.received_lsn);
+            self.state.update_applied_lsn(self.state.received_lsn);
         }
 
         // self.print_replication_message(message)?;
@@ -468,7 +466,7 @@ impl ReplicationServer {
 
         self.connection.put_copy_data(&reply_buf)?;
 
-          debug!(
+        debug!(
             "Sent feedback with received LSN: {:x}, applied LSN: {:x}",
             self.state.received_lsn, self.state.applied_lsn
         );
