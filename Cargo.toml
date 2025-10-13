@@ -1,15 +1,24 @@
 [package]
-name = "pg_replica_rs"
+name = "wal2http"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 libpq-sys = "0.8"
-libc = "0.2.174"
+libc = "0.2.175"
 tokio = { version = "1.47.1", features = ["full"] }
-clap = { version = "4.0", features = ["derive"] }
+clap = { version = "4.5.45", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-anyhow = "1.0"
+anyhow = "1.0.99"
 chrono = { version = "0.4", features = ["serde"] }
-thiserror = "2.0.12"
+thiserror = "2.0.16"
+reqwest = { version = "0.12.23", features = ["json", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+lettre = { version = "0.11", features = ["smtp-transport", "builder"] }
+async-trait = "0.1.88"
+uuid = "1.18.0"
+hook0-client = { rev = "d7642e4ed32e9851eb67114053afcbd9cf9ab614", git = "https://github.com/hook0/hook0", features = [
+	"producer",
+] }
