@@ -8,6 +8,7 @@
 mod buffer;
 mod errors;
 mod logging;
+mod event_sink;
 mod parser;
 mod server;
 mod types;
