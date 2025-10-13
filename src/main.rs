@@ -1,29 +1,53 @@
 //! PostgreSQL Replication Checker - Rust Edition
 //!
 //! A Rust implementation of a PostgreSQL logical replication client that connects to a database,
-//! creates replication slots, and displays changes in real-time.
+//! creates replication slots, and streams database changes to HTTP endpoints or other sinks in real-time.
+//!
+//! ## Architecture Overview
+//!
+//! This application implements the PostgreSQL logical replication protocol to:
+//! 1. Connect to a PostgreSQL database as a replication client
+//! 2. Create or use existing replication slots and publications
+//! 3. Stream WAL (Write-Ahead Log) changes as they happen
+//! 4. Parse and convert database changes into structured events
+//! 5. Send events to configured sinks (HTTP endpoints, Hook0, or STDOUT)
+//!
+//! ## Key Concepts
+//!
+//! - **Logical Replication**: PostgreSQL's mechanism for replicating data at the row level
+//! - **Replication Slot**: A mechanism to track which changes have been consumed
+//! - **Publication**: Defines which tables/changes are published for replication
+//! - **WAL**: Write-Ahead Log, PostgreSQL's transaction log containing all changes
+//! - **LSN**: Log Sequence Number, a unique identifier for positions in the WAL
 //!
 //! Based on the C++ implementation: https://github.com/fkfk000/replication_checker
 
-mod buffer;
-mod email_config;
-mod errors;
-mod event_sink;
-mod parser;
-mod server;
-mod types;
-mod utils;
+// Module declarations - each file contains a specific component of the replication system
+mod buffer;        // Binary buffer reading/writing utilities for protocol messages
+mod email_config;  // Configuration for email notifications (not currently used)
+mod errors;        // Comprehensive error types for the application
+mod event_sink;    // Output handlers for sending events to various destinations
+mod parser;        // Protocol message parser for decoding WAL data
+mod server;        // Main replication server implementation
+mod types;         // Data structures and type definitions
+mod utils;         // Utility functions for PostgreSQL integration
 
+// Import the core types and functionality we need
 use crate::types::ReplicationConfig;
 use crate::{errors::ReplicationError, server::ReplicationServer};
-use clap::Parser;
-use errors::ReplicationResult;
-use std::env;
-use tracing::{error, info};
-use tracing_subscriber::{EnvFilter, fmt};
+use clap::Parser;              // Command line argument parsing
+use errors::ReplicationResult; // Result type alias for error handling
+use std::env;                  // Environment variable access
+use tracing::{error, info};    // Structured logging
+use tracing_subscriber::{EnvFilter, fmt}; // Log formatting and filtering
+use uuid::Uuid;                // UUID handling for Hook0 integration
 
-use uuid::Uuid;
-
+/// Command line arguments structure using clap for parsing
+///
+/// This structure defines the command-line interface for the application.
+/// Currently, it only accepts database connection parameters, but most
+/// configuration is done through environment variables for better
+/// containerization and security.
 #[derive(Parser, Debug)]
 #[command(
     name = "wal2http",
@@ -32,6 +56,10 @@ use uuid::Uuid;
 )]
 struct Args {
     /// Database connection parameters (space-separated key=value pairs)
+    ///
+    /// This accepts traditional PostgreSQL connection string parameters.
+    /// However, in practice, most users should set the DATABASE_URL
+    /// environment variable instead for consistency.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     connection_params: Vec<String>,
 }
@@ -57,31 +85,33 @@ struct Args {
 /// Returns `Ok(())` on successful completion or an error if replication fails.
 #[tokio::main]
 async fn main() -> ReplicationResult<()> {
-    // Initialize tracing
+    // Initialize structured logging with tracing
+    // This sets up logging levels and output formatting
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .with_thread_ids(false)
-        .with_thread_names(false)
+        .with_env_filter(filter)      // Use the filter we just configured
+        .with_target(false)           // Don't show module targets in logs
+        .with_thread_ids(false)       // Don't show thread IDs
+        .with_thread_names(false)     // Don't show thread names
         .init();
 
-    // Check for required environment variables
+    // Load replication configuration from environment variables
+    // These control which replication slot and publication we use
     let slot_name = env::var("SLOT_NAME").unwrap_or_else(|_| "sub".to_string());
     let publication_name = env::var("PUB_NAME").unwrap_or_else(|_| "pub".to_string());
 
     info!("Slot name: {}", slot_name);
     info!("Publication name: {}", publication_name);
 
-    // If DATABASE_URL exists in env vars and no connection params were passed,
-    // we'll create a param from it to maintain backward compatibility with existing Docker setup.
-    // But for consistent approach, we should make the DATABASE_URL be directly read as an env var
+    // Get the database connection URL from environment
+    // This is required for connecting to PostgreSQL
     let database_url = env::var("DATABASE_URL").ok();
 
     let connection_string = if let Some(url) = database_url {
         url
     } else {
+        // If no DATABASE_URL is provided, we can't proceed
         Err(ReplicationError::Configuration {
             message: "Missing DATABASE_URL environment variable".to_string(),
         })?
@@ -89,22 +119,25 @@ async fn main() -> ReplicationResult<()> {
 
     info!("Connection string: {}", connection_string);
 
-    // Create configuration with validation
+    // Load optional sink configuration from environment variables
+    // These determine where replication events are sent
     let http_endpoint_url = env::var("HTTP_ENDPOINT_URL").ok();
     info!("HTTP endpoint URL from env: {:?}", http_endpoint_url);
     let hook0_api_url = env::var("HOOK0_API_URL").ok();
     info!("Hook0 API URL from env: {:?}", hook0_api_url);
 
-    // Attempt to parse Hook0 application ID from environment
+    // Parse Hook0 application ID as a UUID if provided
     let hook0_application_id = env::var("HOOK0_APPLICATION_ID")
         .ok()
         .and_then(|s| Uuid::parse_str(&s).ok());
     info!("Hook0 application ID from env: {:?}", hook0_application_id);
 
-    // Get Hook0 API token from environment
+    // Get Hook0 API token from environment (sensitive information)
     let hook0_api_token = env::var("HOOK0_API_TOKEN").ok();
     info!("Hook0 API token from env: {:?}", hook0_api_token);
 
+    // Create the main configuration object with validation
+    // This performs various checks on the provided configuration
     let config = ReplicationConfig::new(
         connection_string,
         publication_name,
@@ -127,9 +160,27 @@ async fn main() -> ReplicationResult<()> {
     }
 }
 
+/// Helper function to run the replication server
+///
+/// This function encapsulates the core replication logic:
+/// 1. Creates a new ReplicationServer instance with the provided configuration
+/// 2. Identifies the PostgreSQL system (verifies connection and gets system info)
+/// 3. Creates replication slot and starts the replication process
+///
+/// # Arguments
+///
+/// * `config` - The replication configuration containing connection details and settings
+///
+/// # Returns
+///
+/// Returns `Ok(())` when replication completes or an error if any step fails
 async fn run_replication_server(config: ReplicationConfig) -> ReplicationResult<()> {
+    // Create the replication server instance
+    // This establishes the database connection and sets up event sinks
     let mut server = ReplicationServer::new(config)?;
 
+    // Identify the PostgreSQL system we're connecting to
+    // This verifies the connection supports replication and gets system information
     server
         .identify_system()
         .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
