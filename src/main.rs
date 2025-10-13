@@ -19,6 +19,8 @@ use crate::{errors::ReplicationError, server::ReplicationServer};
 use clap::Parser;
 use errors::ReplicationResult;
 use std::env;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -67,7 +69,49 @@ async fn main() -> ReplicationResult<()> {
         .with_thread_names(false)
         .init();
 
-    // Check for required environment variables
+    // Create a shutdown signal that can be shared across the application
+    let shutdown_signal = Arc::new(AtomicBool::new(false));
+
+    // Set up signal handling for graceful shutdown
+    let signal_handler_shutdown = shutdown_signal.clone();
+    tokio::spawn(async move {
+        // Wait for SIGTERM or SIGINT signals
+        #[cfg(unix)]
+        {
+            use std::sync::atomic::Ordering;
+
+            use tokio::signal::unix::{SignalKind, signal};
+            use tracing::warn;
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("Failed to setup SIGTERM handler");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("Failed to setup SIGINT handler");
+
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    warn!("Received SIGTERM signal, initiating graceful shutdown");
+                    signal_handler_shutdown.store(true, Ordering::SeqCst);
+                }
+                _ = sigint.recv() => {
+                    warn!("Received SIGINT signal, initiating graceful shutdown");
+                    signal_handler_shutdown.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            // For Windows, we'll use Ctrl-C
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to setup Ctrl-C handler");
+            warn!("Received Ctrl-C, initiating graceful shutdown");
+            signal_handler_shutdown.store(true, Ordering::SeqCst);
+        }
+    });
+
+    // Load replication configuration from environment variables
+    // These control which replication slot and publication we use
     let slot_name = env::var("SLOT_NAME").unwrap_or_else(|_| "sub".to_string());
     let publication_name = env::var("PUB_NAME").unwrap_or_else(|_| "pub".to_string());
 
@@ -115,7 +159,7 @@ async fn main() -> ReplicationResult<()> {
         hook0_api_token,
     )?;
 
-    match run_replication_server(config).await {
+    match run_replication_server(config, shutdown_signal).await {
         Ok(()) => {
             info!("Replication server completed successfully");
             Ok(())
@@ -127,8 +171,31 @@ async fn main() -> ReplicationResult<()> {
     }
 }
 
-async fn run_replication_server(config: ReplicationConfig) -> ReplicationResult<()> {
-    let mut server = ReplicationServer::new(config)?;
+// Include test module for graceful shutdown functionality
+#[cfg(test)]
+mod test_graceful_shutdown;
+
+/// Helper function to run the replication server
+///
+/// This function encapsulates the core replication logic:
+/// 1. Creates a new ReplicationServer instance with the provided configuration
+/// 2. Identifies the PostgreSQL system (verifies connection and gets system info)
+/// 3. Creates replication slot and starts the replication process
+/// 4. Handles graceful shutdown when signaled
+///
+/// # Arguments
+///
+/// * `config` - The replication configuration containing connection details and settings
+/// * `shutdown_signal` - Shared atomic flag to signal shutdown
+///
+/// # Returns
+///
+/// Returns `Ok(())` when replication completes or an error if any step fails
+async fn run_replication_server(
+    config: ReplicationConfig,
+    shutdown_signal: Arc<AtomicBool>, 
+) -> ReplicationResult<()> {
+    let mut server = ReplicationServer::new(config, shutdown_signal)?;
 
     server
         .identify_system()

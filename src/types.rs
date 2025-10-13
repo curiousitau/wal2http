@@ -354,6 +354,20 @@ impl ReplicationConfig {
             ));
         }
 
+        // Validate event sink if provided
+        if let Some(ref service) = event_sink {
+            let service_lower = service.to_lowercase();
+            if !service_lower.is_empty()
+                && service_lower != "http"
+                && service_lower != "hook0"
+                && service_lower != "stdout"
+            {
+                return Err(crate::errors::ReplicationError::config(
+                    "Event sink must be one of: 'http', 'hook0', or 'stdout'",
+                ));
+            }
+        }
+
         // Validate Hook0 configuration if provided
         if let Some(ref url) = hook0_api_url
             && !url.trim().is_empty()

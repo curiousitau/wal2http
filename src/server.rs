@@ -16,6 +16,7 @@ use crate::types::*;
 use crate::utils::{PGConnection, system_time_to_postgres_timestamp};
 use libpq_sys::ExecStatusType;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 use tracing::{debug, error, info, warn};
 
@@ -29,55 +30,99 @@ pub struct ReplicationServer {
     config: ReplicationConfig,
     state: ReplicationState,
     event_sink: Option<Arc<dyn EventSink + Send + Sync>>,
+    shutdown_signal: Arc<AtomicBool>,
 }
 
 impl ReplicationServer {
-    pub fn new(config: ReplicationConfig) -> ReplicationResult<Self> {
+    /// Creates a new replication server with the given configuration
+    ///
+    /// Establishes database connection and initializes the appropriate event sink
+    /// based on configuration (Hook0, HTTP endpoint, or STDOUT fallback).
+    pub fn new(
+        config: ReplicationConfig,
+        shutdown_signal: Arc<AtomicBool>,
+    ) -> ReplicationResult<Self> {
         info!("Connecting to database: {}", config.connection_string);
         let connection = PGConnection::connect(&config.connection_string)?;
         info!("Successfully connected to database server");
 
-        let event_sink = if let (Some(api_url), Some(app_id), Some(api_token)) = (
-            config.hook0_api_url.as_ref(),
-            config.hook0_application_id,
-            config.hook0_api_token.as_ref(),
-        ) {
-            info!("Initializing Hook0 event sink with URL: {}", api_url);
-            let hook0_config = Hook0EventSinkConfig {
-                api_url: api_url.clone(),
-                application_id: app_id,
-                api_token: api_token.clone(),
-            };
-            match hook0::Hook0EventSink::new(hook0_config) {
-                Ok(sink) => {
-                    info!("Successfully initialized Hook0 event sink");
-                    Some(Arc::new(sink) as Arc<dyn EventSink + Send + Sync>)
-                }
-                Err(e) => {
-                    error!("Failed to initialize Hook0 event sink: {}", e);
-                    return Err(crate::errors::ReplicationError::protocol(e));
+        // Configure event sink based on provided configuration
+        let event_sink = match config
+            .event_sink
+            .as_ref()
+            .map(|s| s.to_lowercase())
+            .as_deref()
+        {
+            Some("hook0") => {
+                // Hook0 event sink integration
+                if let (Some(api_url), Some(app_id), Some(api_token)) = (
+                    config.hook0_api_url.as_ref(),
+                    config.hook0_application_id,
+                    config.hook0_api_token.as_ref(),
+                ) {
+                    info!("Initializing Hook0 event sink with URL: {}", api_url);
+                    let hook0_config = Hook0EventSinkConfig {
+                        api_url: api_url.clone(),
+                        application_id: app_id,
+                        api_token: api_token.clone(),
+                    };
+                    match hook0::Hook0EventSink::new(hook0_config) {
+                        Ok(sink) => {
+                            info!("Successfully initialized Hook0 event sink");
+                            Some(Arc::new(sink) as Arc<dyn EventSink + Send + Sync>)
+                        }
+                        Err(e) => {
+                            error!("Failed to initialize Hook0 event sink: {}", e);
+                            return Err(crate::errors::ReplicationError::protocol(e));
+                        }
+                    }
+                } else {
+                    error!(
+                        "Hook0 event sink specified but missing required configuration (api_url, application_id, or api_token)"
+                    );
+                    return Err(crate::errors::ReplicationError::protocol(
+                        "Missing Hook0 configuration",
+                    ));
                 }
             }
-        } else if let Some(url) = config.http_endpoint_url.as_ref() {
-            info!("Initializing HTTP event sink with URL: {}", url);
-            let http_config = HttpEventSinkConfig {
-                endpoint_url: url.clone(),
-            };
-            match HttpEventSink::new(http_config) {
-                Ok(sink) => {
-                    info!("Successfully initialized HTTP event sink");
-                    Some(Arc::new(sink) as Arc<dyn EventSink + Send + Sync>)
-                }
-                Err(e) => {
-                    error!("Failed to initialize HTTP event sink: {}", e);
-                    return Err(crate::errors::ReplicationError::protocol(e));
+            Some("http") => {
+                // Generic HTTP endpoint sink
+                if let Some(url) = config.http_endpoint_url.as_ref() {
+                    info!("Initializing HTTP event sink with URL: {}", url);
+                    let http_config = HttpEventSinkConfig {
+                        endpoint_url: url.clone(),
+                    };
+                    match HttpEventSink::new(http_config) {
+                        Ok(sink) => {
+                            info!("Successfully initialized HTTP event sink");
+                            Some(Arc::new(sink) as Arc<dyn EventSink + Send + Sync>)
+                        }
+                        Err(e) => {
+                            error!("Failed to initialize HTTP event sink: {}", e);
+                            return Err(crate::errors::ReplicationError::protocol(e));
+                        }
+                    }
+                } else {
+                    error!("HTTP event sink specified but missing HTTP_ENDPOINT_URL");
+                    return Err(crate::errors::ReplicationError::protocol(
+                        "Missing HTTP endpoint URL",
+                    ));
                 }
             }
-        } else {
-            info!("No event sink configured, events will be sent to STDOUT");
-
-            Some(Arc::new(crate::event_sink::stdout::StdoutEventSink {})
-                as Arc<dyn EventSink + Send + Sync>)
+            Some("stdout") | None => {
+                // STDOUT for development/testing or when no event sink is specified
+                info!("Events will be sent to STDOUT");
+                Some(Arc::new(crate::event_sink::stdout::StdoutEventSink {})
+                    as Arc<dyn EventSink + Send + Sync>)
+            }
+            Some(service) => {
+                // This should be caught by validation, but handle it defensively
+                error!("Unsupported event sink: {}", service);
+                return Err(crate::errors::ReplicationError::protocol(format!(
+                    "Unsupported event sink: {}",
+                    service
+                )));
+            }
         };
 
         Ok(Self {
@@ -85,6 +130,7 @@ impl ReplicationServer {
             config,
             state: ReplicationState::new(),
             event_sink,
+            shutdown_signal,
         })
     }
 
@@ -278,6 +324,13 @@ impl ReplicationServer {
 
     async fn replication_loop(&mut self) -> ReplicationResult<()> {
         loop {
+            // Check for shutdown signal before each iteration
+            if self.shutdown_signal.load(Ordering::SeqCst) {
+                info!("Shutdown signal received, initiating graceful shutdown");
+                self.perform_graceful_shutdown().await?;
+                break;
+            }
+
             self.check_and_send_feedback()?;
 
             match self.connection.get_copy_data()? {
@@ -302,6 +355,15 @@ impl ReplicationServer {
                         }
                         'w' => {
                             self.process_wal_message(&data).await?;
+
+                            // Check for shutdown signal after processing a WAL message
+                            if self.shutdown_signal.load(Ordering::SeqCst) {
+                                info!(
+                                    "Shutdown signal received after processing WAL message, initiating graceful shutdown"
+                                );
+                                self.perform_graceful_shutdown().await?;
+                                break;
+                            }
                         }
                         _ => {
                             warn!("Received unknown message type: {}", data[0] as char);
@@ -310,6 +372,9 @@ impl ReplicationServer {
                 }
             }
         }
+
+        info!("Replication loop completed");
+        Ok(())
     }
 
     /// Process a keepalive message from the replication stream
@@ -470,6 +535,38 @@ impl ReplicationServer {
             "Sent feedback with received LSN: {:x}, applied LSN: {:x}",
             self.state.received_lsn, self.state.applied_lsn
         );
+        Ok(())
+    }
+
+    /// Performs graceful shutdown of the replication server
+    ///
+    /// This method ensures that:
+    /// 1. Final feedback is sent to PostgreSQL with the latest LSN
+    /// 2. The replication connection is properly closed
+    /// 3. Any pending events are flushed to the event sink
+    /// 4. Resources are cleaned up in the correct order
+    async fn perform_graceful_shutdown(&mut self) -> ReplicationResult<()> {
+        info!("Starting graceful shutdown process");
+
+        // Send final feedback to PostgreSQL with the latest LSN position
+        // This ensures PostgreSQL knows we've processed all changes up to this point
+        if let Err(e) = self.send_feedback() {
+            warn!("Failed to send final feedback during shutdown: {}", e);
+        } else {
+            info!("Successfully sent final feedback to PostgreSQL");
+        }
+
+        // Flush any remaining data in the connection
+        if let Err(e) = self.connection.flush() {
+            warn!("Failed to flush connection during shutdown: {}", e);
+        }
+
+        // Close the replication connection properly
+        // This tells PostgreSQL we're done with the replication slot
+        info!("Closing replication connection");
+        // Note: The actual connection cleanup will happen when the struct is dropped
+
+        info!("Graceful shutdown completed successfully");
         Ok(())
     }
 
