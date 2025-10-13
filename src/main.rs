@@ -36,6 +36,25 @@ struct Args {
     connection_params: Vec<String>,
 }
 
+/// Application entry point
+///
+/// This is the main function that initializes the application and starts the replication server.
+/// It uses the `tokio` async runtime to handle asynchronous operations.
+///
+/// # Configuration
+///
+/// The application is configured primarily through environment variables:
+/// - `DATABASE_URL`: PostgreSQL connection string (required)
+/// - `SLOT_NAME`: Replication slot name (defaults to "sub")
+/// - `PUB_NAME`: Publication name (defaults to "pub")
+/// - `HTTP_ENDPOINT_URL`: URL for HTTP event sink (optional, required when using "http" service)
+/// - `HOOK0_API_URL`: Hook0 API URL (optional, required when using "hook0" service)
+/// - `HOOK0_APPLICATION_ID`: Hook0 application UUID (optional, required when using "hook0" service)
+/// - `HOOK0_API_TOKEN`: Hook0 API token (optional, required when using "hook0" service)
+///
+/// # Returns
+///
+/// Returns `Ok(())` on successful completion or an error if replication fails.
 #[tokio::main]
 async fn main() -> ReplicationResult<()> {
     // Initialize tracing
@@ -61,7 +80,7 @@ async fn main() -> ReplicationResult<()> {
     let database_url = env::var("DATABASE_URL").ok();
 
     let connection_string = if let Some(url) = database_url {
-        url // Use DATABASE_URL directly from environment
+        url
     } else {
         Err(ReplicationError::Configuration {
             message: "Missing DATABASE_URL environment variable".to_string(),
@@ -96,7 +115,6 @@ async fn main() -> ReplicationResult<()> {
         hook0_api_token,
     )?;
 
-    // Create and run the replication server
     match run_replication_server(config).await {
         Ok(()) => {
             info!("Replication server completed successfully");
@@ -115,6 +133,7 @@ async fn run_replication_server(config: ReplicationConfig) -> ReplicationResult<
     server
         .identify_system()
         .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
+
     server
         .create_replication_slot_and_start()
         .await

@@ -1,5 +1,10 @@
 //! PostgreSQL replication server implementation
-//! Main server that handles connection, replication slot management, and message processing
+//!
+//! Main server that handles the complete logical replication lifecycle:
+//! - Database connection and validation
+//! - Replication slot and publication verification
+//! - WAL streaming and message processing
+//! - Event delivery to configured sinks
 
 use crate::buffer::{BufferReader, BufferWriter};
 use crate::errors::ReplicationResult;
@@ -16,6 +21,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use tracing::{debug, error, info, warn};
 
+/// Main replication server that manages the logical replication connection
+///
+/// This struct coordinates all aspects of the replication process, maintaining
+/// the connection state, processing messages, and ensuring reliable delivery
+/// of database changes to the configured event sink.
 pub struct ReplicationServer {
     connection: PGConnection,
     config: ReplicationConfig,
@@ -80,6 +90,10 @@ impl ReplicationServer {
         })
     }
 
+    /// Verifies that PostgreSQL is configured for logical replication
+    ///
+    /// Checks that the wal_level setting is 'logical', which is required
+    /// for logical replication to function.
     pub fn check_wal_level(&self) -> ReplicationResult<()> {
         info!("Checking wal_level setting");
 
@@ -113,6 +127,10 @@ impl ReplicationServer {
         }
     }
 
+    /// Identifies the PostgreSQL system and verifies replication support
+    ///
+    /// Executes IDENTIFY_SYSTEM to verify the connection supports replication
+    /// and retrieves system information including timeline and WAL position.
     pub fn identify_system(&self) -> ReplicationResult<()> {
         debug!("Identifying system");
         match self.connection.exec("IDENTIFY_SYSTEM") {
@@ -145,6 +163,13 @@ impl ReplicationServer {
         Ok(())
     }
 
+    /// Orchestrates the complete replication setup process
+    ///
+    /// Performs all necessary validation and setup before starting replication:
+    /// 1. Verifies wal_level is 'logical'
+    /// 2. Checks replication slot exists
+    /// 3. Verifies publication exists
+    /// 4. Starts the replication stream
     pub async fn create_replication_slot_and_start(&mut self) -> ReplicationResult<()> {
         self.check_wal_level()?;
         self.check_replication_slot()?;
@@ -330,7 +355,7 @@ impl ReplicationServer {
         if k.reply_requested {
             debug!("Server requested feedback in keepalive");
             self.send_feedback()?;
-            self.connection.flush()?; // Flush the connection to ensure feedback is sent immediately
+            self.connection.flush()?;
         }
         Ok(())
     }
@@ -389,14 +414,14 @@ impl ReplicationServer {
             debug!("Sending event to event sink: {:?}", message);
 
             // Process event sequentially - wait for successful delivery before continuing
-            match event_sink.send_event(&message).await {
+                match event_sink.send_event(&message).await {
                 Ok(()) => {
                     debug!(
                         "Successfully sent event to sink for LSN: {:x}",
                         self.state.received_lsn
                     );
                     // Only update applied LSN after successful event delivery
-                    self.state.update_applied_lsn(self.state.received_lsn);
+                      self.state.update_applied_lsn(self.state.received_lsn);
                 }
                 Err(e) => {
                     error!("Failed to send event to event sink: {}", e);
@@ -408,7 +433,7 @@ impl ReplicationServer {
             }
         } else {
             // No event sink configured, so we can consider this immediately "applied"
-            self.state.update_applied_lsn(self.state.received_lsn);
+              self.state.update_applied_lsn(self.state.received_lsn);
         }
 
         // self.print_replication_message(message)?;
@@ -426,11 +451,11 @@ impl ReplicationServer {
             let mut writer = BufferWriter::new(&mut reply_buf);
 
             writer.write_u8(b'r')?;
-            writer.write_u64(self.state.received_lsn)?; // Received LSN
-            writer.write_u64(self.state.received_lsn)?; // Flushed LSN (same as received)
-            writer.write_u64(self.state.applied_lsn)?; // Applied LSN
-            writer.write_i64(timestamp)?; // Timestamp
             writer.write_u8(0)?; // Don't request reply
+            writer.write_u64(self.state.received_lsn)?;
+            writer.write_u64(self.state.received_lsn)?;
+            writer.write_u64(self.state.applied_lsn)?;
+            writer.write_i64(timestamp)?;
 
             writer.bytes_written()
         };
@@ -443,8 +468,7 @@ impl ReplicationServer {
 
         self.connection.put_copy_data(&reply_buf)?;
 
-        // Output the LSN in hex format for better readability
-        debug!(
+          debug!(
             "Sent feedback with received LSN: {:x}, applied LSN: {:x}",
             self.state.received_lsn, self.state.applied_lsn
         );
