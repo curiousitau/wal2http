@@ -90,10 +90,10 @@ async fn main() -> ReplicationResult<()> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     fmt()
-        .with_env_filter(filter)      // Use the filter we just configured
-        .with_target(false)           // Don't show module targets in logs
-        .with_thread_ids(false)       // Don't show thread IDs
-        .with_thread_names(false)     // Don't show thread names
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false)
         .init();
 
     // Load replication configuration from environment variables
@@ -111,7 +111,6 @@ async fn main() -> ReplicationResult<()> {
     let connection_string = if let Some(url) = database_url {
         url
     } else {
-        // If no DATABASE_URL is provided, we can't proceed
         Err(ReplicationError::Configuration {
             message: "Missing DATABASE_URL environment variable".to_string(),
         })?
@@ -136,8 +135,6 @@ async fn main() -> ReplicationResult<()> {
     let hook0_api_token = env::var("HOOK0_API_TOKEN").ok();
     info!("Hook0 API token from env: {:?}", hook0_api_token);
 
-    // Create the main configuration object with validation
-    // This performs various checks on the provided configuration
     let config = ReplicationConfig::new(
         connection_string,
         publication_name,
@@ -175,12 +172,8 @@ async fn main() -> ReplicationResult<()> {
 ///
 /// Returns `Ok(())` when replication completes or an error if any step fails
 async fn run_replication_server(config: ReplicationConfig) -> ReplicationResult<()> {
-    // Create the replication server instance
-    // This establishes the database connection and sets up event sinks
     let mut server = ReplicationServer::new(config)?;
 
-    // Identify the PostgreSQL system we're connecting to
-    // This verifies the connection supports replication and gets system information
     server
         .identify_system()
         .map_err(|e| crate::errors::ReplicationError::Other(e.into()))?;
