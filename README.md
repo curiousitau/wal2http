@@ -162,6 +162,103 @@ The implementation consists of several key modules:
 3. **Message Processing**: Handlers for all logical replication message types (BEGIN, COMMIT, INSERT, UPDATE, DELETE, TRUNCATE, etc.)
 4. **Feedback System**: Implements the feedback protocol to acknowledge processed WAL positions
 
+## Message Flow Sequence Diagram
+
+The following sequence diagram shows the interaction between PostgreSQL and wal2http during logical replication:
+
+```mermaid
+sequenceDiagram
+    participant PG as PostgreSQL
+    participant WAL2 as wal2http
+    participant SINK as Event Sink (HTTP/Hook0/Stdout)
+
+    Note over PG,WAL2: Connection Setup Phase
+    WAL2->>PG: CONNECT (connection_string)
+    PG-->>WAL2: Connection established
+    
+    WAL2->>PG: EXEC: SHOW wal_level
+    PG-->>WAL2: wal_level = "logical"
+    
+    WAL2->>PG: EXEC: IDENTIFY_SYSTEM
+    PG-->>WAL2: System info (timeline, xlogpos, dbname)
+    
+    WAL2->>PG: EXEC: SELECT FROM pg_replication_slots
+    PG-->>WAL2: Replication slot exists
+    
+    WAL2->>PG: EXEC: SELECT FROM pg_publication
+    PG-->>WAL2: Publication exists
+    
+    WAL2->>PG: EXEC: START_REPLICATION SLOT slot_name LOGICAL 0/0
+    Note over WAL2: proto_version '2', streaming 'on', publication_names 'pub_name'
+    PG-->>WAL2: CopyBothResponse mode started
+
+    Note over PG,WAL2: Replication Loop - Periodic Feedback
+    loop Every feedback_interval_secs (default 1s)
+        WAL2->>WAL2: check_and_send_feedback()
+        alt Last feedback > timeout
+            WAL2->>PG: FEEDBACK (r)
+            Note over WAL2: received_lsn, flushed_lsn, applied_lsn, timestamp
+            PG-->>WAL2: Feedback acknowledged
+        end
+        
+        WAL2->>PG: get_copy_data()
+        alt No data available
+            PG-->>WAL2: None
+            WAL2->>WAL2: sleep(10ms)
+        end
+    end
+
+    Note over PG,WAL2: Keepalive Message Handling
+    PG->>WAL2: KEEPALIVE (k)
+    Note over PG: log_pos, timestamp, reply_requested
+    
+    alt reply_requested = 1
+        WAL2->>PG: FEEDBACK (r)
+        Note over WAL2: Immediate feedback requested
+        WAL2->>PG: flush()
+        PG-->>WAL2: Feedback processed
+    else reply_requested = 0
+        Note over WAL2: No immediate response needed
+    end
+    PG-->>WAL2: Keepalive processed
+
+    Note over PG,WAL2: WAL Data Processing
+    PG->>WAL2: WAL DATA (w)
+    Note over PG: data_start, wal_data, start_lsn
+    
+    WAL2->>WAL2: process_wal_message()
+    WAL2->>WAL2: Parse logical replication message
+    WAL2->>WAL2: process_replication_message()
+    
+    alt Event sink configured
+        WAL2->>SINK: send_event(message)
+        SINK-->>WAL2: Event delivered successfully
+        WAL2->>WAL2: update_applied_lsn()
+    else No event sink
+        WAL2->>WAL2: update_applied_lsn() immediately
+    end
+    
+    WAL2->>PG: FEEDBACK (r)
+    Note over WAL2: Sent after processing each WAL message
+    PG-->>WAL2: Feedback acknowledged
+    PG-->>WAL2: WAL message processed
+
+    Note over PG,WAL2: Error Handling
+    alt Event sink fails
+        WAL2->>WAL2: Log error
+        WAL2->>WAL2: Return ReplicationError
+        Note over WAL2: Replication loop may terminate
+    end
+```
+
+### Key Feedback Events
+
+1. **Periodic Feedback**: Sent every `feedback_interval_secs` (default 1 second) to maintain connection health
+2. **Requested Feedback**: Sent immediately when PostgreSQL sets `reply_requested=1` in keepalive messages
+3. **Post-Processing Feedback**: Sent after each WAL message is successfully processed and delivered to event sink
+
+The feedback mechanism ensures PostgreSQL knows which LSN positions have been received and applied, preventing unnecessary retransmission and maintaining replication consistency.
+
 ## Supported Operations
 
 - ✅ **BEGIN** - Transaction start
