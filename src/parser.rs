@@ -1,19 +1,27 @@
 //! PostgreSQL logical replication protocol message parser
-//! Handles parsing of various message types from the replication stream
+//!
+//! Handles parsing of binary protocol messages from PostgreSQL's logical replication
+//! stream. This module converts the raw binary WAL data into structured ReplicationMessage
+//! enums that can be processed by the application.
+//!
+//! Reference: https://www.postgresql.org/docs/current/protocol-logicalrep-message-formats.html
 
 use crate::buffer::BufferReader;
 use crate::errors::{ReplicationError, ReplicationResult};
 use crate::types::*;
 use tracing::{debug, error, warn};
 
-/// Parse logical replication messages from a buffer
+/// Parser for logical replication messages
+///
+/// Provides static methods to parse different types of replication messages
+/// from the binary protocol format sent by PostgreSQL.
 pub struct MessageParser;
 
 impl MessageParser {
-    /// Parse a WAL message from the given buffer
-    /// Returns a ReplicationMessage on success
-    /// Errors with ReplicationError on failure
-    /// please refer to https://www.postgresql.org/docs/current/protocol-logicalrep-message-formats.html#PROTOCOL-LOGICALREP-MESSAGE-FORMATS
+    /// Entry point for parsing WAL messages from the replication stream
+    ///
+    /// Reads the message type byte and dispatches to the appropriate
+    /// parser for that message type.
     pub fn parse_wal_message(buffer: &[u8]) -> ReplicationResult<ReplicationMessage> {
         let mut reader = BufferReader::new(buffer);
         let message_type = reader.skip_message_type()?;
@@ -42,8 +50,8 @@ impl MessageParser {
         }
     }
 
+    /// Parses a BEGIN message marking the start of a transaction
     fn parse_begin_message(reader: &mut BufferReader) -> ReplicationResult<ReplicationMessage> {
-        // BEGIN message: final_lsn (8) + timestamp (8) + xid (4) = 20 bytes + 1 for type
         if !reader.has_bytes(20) {
             return Err(ReplicationError::parse("Begin message too short"));
         }

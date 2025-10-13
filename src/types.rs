@@ -1,15 +1,34 @@
 //! Data structures for PostgreSQL logical replication
-//! Contains types for representing relation information, tuple data, and messages
+//!
+//! This module contains the core data types used throughout the wal2http application.
+//! These types represent:
+//! - Database schema information (tables, columns)
+//! - Row data and changes (inserts, updates, deletes)
+//! - Replication protocol messages
+//! - Configuration and state management
+//!
+//! All types are designed to be serializable to JSON for easy integration with web services
+//! and other external systems.
 
 use crate::{
     buffer::{BufferReader, BufferWriter},
     errors::ReplicationError,
     utils::{Oid, Xid},
 };
-use serde::Serialize;
-use std::collections::HashMap;
+use serde::Serialize;           // For JSON serialization
+use std::collections::HashMap;  // For storing relation information by OID
 
 /// Information about a table column
+///
+/// This structure represents metadata about a column in a PostgreSQL table.
+/// It's used to understand the structure of data being replicated.
+///
+/// # Fields
+///
+/// * `key_flag` - Indicates if this column is part of the primary key (-1 for key, 0 for non-key)
+/// * `column_name` - The name of the column as defined in the database
+/// * `column_type` - PostgreSQL Object ID (OID) representing the column's data type
+/// * `atttypmod` - Type modifier containing additional information (like varchar length)
 #[derive(Debug, Clone, Serialize)]
 pub struct ColumnInfo {
     pub key_flag: i8,
@@ -19,6 +38,19 @@ pub struct ColumnInfo {
 }
 
 /// Information about a relation (table)
+///
+/// This structure represents metadata about a PostgreSQL table (relation) that is being
+/// replicated. It contains the schema information needed to understand and interpret
+/// the data changes flowing through the replication stream.
+///
+/// # Fields
+///
+/// * `oid` - PostgreSQL Object ID (OID) that uniquely identifies this table
+/// * `namespace` - The schema name where this table resides
+/// * `relation_name` - The name of the table
+/// * `replica_identity` - How row changes are identified ('d' for default, 'f' for full, 'i' for index)
+/// * `column_count` - Number of columns in the table
+/// * `columns` - Vector of column information structures
 #[derive(Debug, Clone, Serialize)]
 pub struct RelationInfo {
     pub oid: Oid,
@@ -29,71 +61,154 @@ pub struct RelationInfo {
     pub columns: Vec<ColumnInfo>,
 }
 
-/// Data for a single column in a tuple
+/// Data for a single column in a tuple (row)
+///
+/// This structure represents the actual data value for a single column in a row
+/// that has been changed. It includes type information and the value itself.
+///
+/// # Fields
+///
+/// * `data_type` - Type indicator character: 'n' for NULL, 't' for text, 'u' for unchanged TOAST
+/// * `length` - Length of the data in bytes (0 for NULL values)
+/// * `data` - The actual data as a string (empty for NULL values)
 #[derive(Debug, Clone, Serialize)]
 pub struct ColumnData {
-    pub data_type: char, // 'n' for null, 't' for text, 'u' for unchanged
+    pub data_type: char,
     pub length: i32,
     pub data: String,
 }
 
 /// Data for a complete row/tuple
+///
+/// This structure represents all the column data for a single row (tuple) in the database.
+/// It's used for INSERT operations and the NEW version of UPDATE operations.
+///
+/// # Fields
+///
+/// * `column_count` - Number of columns in this tuple
+/// * `columns` - Vector of column data structures
+/// * `processed_length` - Total bytes processed when parsing this tuple from the wire protocol
 #[derive(Debug, Clone, Serialize)]
 pub struct TupleData {
     pub column_count: i16,
     pub columns: Vec<ColumnData>,
-    pub processed_length: usize, // How many bytes were processed
+    pub processed_length: usize,
 }
 
 /// Types of logical replication messages
+///
+/// This enum represents all possible message types that can be received from PostgreSQL's
+/// logical replication protocol. Each variant represents a different type of database
+/// change or control message.
+///
+/// ## Message Flow
+///
+/// A typical transaction flows as:
+/// 1. `Begin` - Transaction starts
+/// 2. `Relation` - Table schema information (once per table)
+/// 3. `Insert`/`Update`/`Delete` - Data changes
+/// 4. `Commit` - Transaction completes
+///
+/// For streaming transactions (large transactions):
+/// - `StreamStart` begins the streaming
+/// - Changes are sent as they occur
+/// - `StreamCommit` or `StreamAbort` ends the streaming
 #[derive(Debug, Clone, Serialize)]
 pub enum ReplicationMessage {
+    /// Transaction start message
+    ///
+    /// Marks the beginning of a new transaction. All subsequent messages
+    /// belong to this transaction until a Commit message is received.
     Begin {
         final_lsn: u64,
         timestamp: i64,
         xid: Xid,
     },
+
+    /// Transaction commit message
+    ///
+    /// Marks the successful completion of a transaction. All changes
+    /// in this transaction are now durable and visible.
     Commit {
         flags: u8,
         commit_lsn: u64,
         end_lsn: u64,
         timestamp: i64,
     },
+
+    /// Table schema information message
+    ///
+    /// Provides metadata about a table that will be referenced by
+    /// subsequent Insert/Update/Delete messages. Sent once per table
+    /// when first referenced in a replication session.
     Relation {
         relation: RelationInfo,
     },
+
+    /// Row insertion message
+    ///
+    /// Represents a new row being inserted into a table.
     Insert {
         relation_id: Oid,
         tuple_data: TupleData,
         is_stream: bool,
         xid: Option<Xid>,
     },
+
+    /// Row update message
+    ///
+    /// Represents an existing row being modified. May include both
+    /// old and new versions of the data depending on replica identity settings.
     Update {
         relation_id: Oid,
-        key_type: Option<char>, // 'K' for replica identity, 'O' for old tuple
+        key_type: Option<char>,
         old_tuple_data: Option<TupleData>,
         new_tuple_data: TupleData,
         is_stream: bool,
         xid: Option<Xid>,
     },
+
+    /// Row deletion message
+    ///
+    /// Represents a row being deleted from a table. Includes either
+    /// the full old tuple or just the replica identity key.
     Delete {
         relation_id: Oid,
-        key_type: char, // 'K' for replica identity, 'O' for old tuple
+        key_type: char,
         tuple_data: TupleData,
         is_stream: bool,
         xid: Option<Xid>,
     },
+
+    /// Table truncate message
+    ///
+    /// Represents all rows being deleted from one or more tables.
+    /// This is more efficient than sending individual Delete messages.
     Truncate {
         relation_ids: Vec<Oid>,
         flags: i8,
         is_stream: bool,
         xid: Option<Xid>,
     },
+
+    /// Start of streaming transaction message
+    ///
+    /// Marks the beginning of a large transaction that will be streamed
+    /// incrementally rather than waiting for completion.
     StreamStart {
         xid: Xid,
         first_segment: bool,
     },
+
+    /// End of streaming segment message
+    ///
+    /// Marks the end of the current streaming segment. More segments
+    /// may follow for the same transaction.
     StreamStop,
+
+    /// Streaming transaction commit message
+    ///
+    /// Marks the successful completion of a streaming transaction.
     StreamCommit {
         xid: Xid,
         flags: u8,
@@ -101,6 +216,10 @@ pub enum ReplicationMessage {
         end_lsn: u64,
         timestamp: i64,
     },
+
+    /// Streaming transaction abort message
+    ///
+    /// Indicates that a streaming transaction was rolled back.
     StreamAbort {
         xid: Xid,
         subtransaction_xid: Xid,
@@ -108,41 +227,55 @@ pub enum ReplicationMessage {
 }
 
 /// State for managing logical replication
+///
+/// Tracks the current state of the replication connection, including schema information,
+/// LSN positions, and feedback timing. This is used to maintain replication consistency
+/// and provide proper feedback to the PostgreSQL server.
 #[derive(Debug)]
 pub struct ReplicationState {
+    /// Table schema information indexed by table OID
     pub relations: HashMap<Oid, RelationInfo>,
+    /// Highest LSN received from the server
     pub received_lsn: u64,
+    /// Highest LSN flushed to disk (currently unused)
     #[allow(unused)]
     pub flushed_lsn: u64,
+    /// When we last sent feedback to the server
     pub last_feedback_time: std::time::Instant,
-    pub applied_lsn: u64, // When an event successfully gets processed by the event sink, this is updated
+    /// Highest LSN successfully processed by event sink
+    pub applied_lsn: u64,
 }
 
 impl ReplicationState {
+    /// Creates a new replication state with default values
     pub fn new() -> Self {
         Self {
             relations: HashMap::new(),
             received_lsn: 0,
             flushed_lsn: 0,
             last_feedback_time: std::time::Instant::now(),
-            applied_lsn: 0, // Initially no events have been applied to the sink
+            applied_lsn: 0,
         }
     }
 
+    /// Stores table schema information for later use
     pub fn add_relation(&mut self, relation: RelationInfo) {
         self.relations.insert(relation.oid, relation);
     }
 
+    /// Retrieves table schema information by OID
     pub fn get_relation(&self, oid: Oid) -> Option<&RelationInfo> {
         self.relations.get(&oid)
     }
 
+    /// Updates the received LSN if the new value is higher
     pub fn update_lsn(&mut self, lsn: u64) {
         if lsn > 0 {
             self.received_lsn = std::cmp::max(self.received_lsn, lsn);
         }
     }
 
+    /// Updates the applied LSN if the new value is higher
     pub fn update_applied_lsn(&mut self, lsn: u64) {
         if lsn > 0 {
             self.applied_lsn = std::cmp::max(self.applied_lsn, lsn);
@@ -354,24 +487,22 @@ Hot standby feedback message (F)
 */
 // https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-PRIMARY-KEEPALIVE-MESSAGE
 pub struct KeepaliveMessage {
-    pub message_type: char, // 'k' for keepalive
+    pub message_type: char,
     pub log_pos: u64,
     pub timestamp: u64,
     pub reply_requested: bool,
 }
 
-// https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-XLOGDATA-MESSAGE
 pub struct XLogDataMessage {
-    pub message_type: char, // 'w' for wal data
+    pub message_type: char,
     pub data_start: u64,
     pub wal_end: u64,
     pub send_time: u64,
     pub data: Vec<u8>,
 }
 
-// https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-STANDBY-STATUS-UPDATE
 pub struct StandbyStatusUpdateMessage {
-    pub message_type: char, // 'r' for status update
+    pub message_type: char,
     pub reply_requested: u8,
     pub last_lsn: u64,
     pub flush_lsn: u64,
@@ -379,9 +510,8 @@ pub struct StandbyStatusUpdateMessage {
     pub send_time: u64,
 }
 
-// https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-HOT-STANDBY-FEEDBACK-MESSAGE
 pub struct HotStandbyFeedbackMessage {
-    pub message_type: char, // 'h' for hot standby feedback
+    pub message_type: char,
     pub send_time: u64,
     pub xmin: u32,
     pub epoch: u32,

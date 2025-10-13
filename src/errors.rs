@@ -1,9 +1,14 @@
 //! Comprehensive error types for PostgreSQL replication checker
+//!
 //! Provides structured error handling using thiserror for better error reporting
+//! and debugging capabilities throughout the replication system.
 
 use thiserror::Error;
 
 /// Main error type for the PostgreSQL replication checker application
+///
+/// This enum represents all possible error conditions that can occur during
+/// replication operations, providing context and structured error information.
 #[derive(Error, Debug)]
 pub enum ReplicationError {
     /// Database connection related errors
@@ -51,6 +56,7 @@ pub enum ReplicationError {
     #[error("Task execution error")]
     TaskExecution(#[from] tokio::task::JoinError),
 
+    /// Event sink errors
     #[error("Sink error")]
     Sink { message: String, sink: String },
 

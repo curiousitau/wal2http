@@ -1,5 +1,9 @@
 //! Utility functions for PostgreSQL replication
-//! Contains helper functions for byte manipulation, timestamp conversion, and other utilities
+//!
+//! Contains helper functions for:
+//! - Byte manipulation with proper endianness
+//! - PostgreSQL timestamp conversion
+//! - Safe PostgreSQL connection handling using libpq
 
 use crate::errors::ReplicationResult;
 use chrono::DateTime;
@@ -9,13 +13,13 @@ use std::ptr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // PostgreSQL epoch constants
-const PG_EPOCH_OFFSET_SECS: i64 = 946_684_800; // Seconds from 1970 to 2000
+const PG_EPOCH_OFFSET_SECS: i64 = 946_684_800; // Seconds from Unix epoch (1970) to PostgreSQL epoch (2000)
 
-// Type aliases to match PostgreSQL types
-pub type XLogRecPtr = u64;
-pub type Xid = u32;
-pub type Oid = u32;
-pub type TimestampTz = i64;
+// Type aliases matching PostgreSQL internal types
+pub type XLogRecPtr = u64;     // WAL location pointer
+pub type Xid = u32;            // Transaction ID
+pub type Oid = u32;            // Object ID
+pub type TimestampTz = i64;    // Timestamp with timezone
 
 pub const INVALID_XLOG_REC_PTR: XLogRecPtr = 0;
 
@@ -265,10 +269,11 @@ pub fn buf_send_i64(val: i64, buf: &mut [u8]) {
     buf[..8].copy_from_slice(&bytes);
 }
 
-/// Safe wrapper for PostgreSQL connection.
+/// Safe wrapper for PostgreSQL connection using libpq
 ///
-/// This struct provides a safe interface to PostgreSQL connections using libpq.
-/// It handles connection establishment, query execution, and data transfer operations.
+/// Provides a safe Rust interface to PostgreSQL's C library (libpq)
+/// for replication operations. Handles connection lifecycle, query execution,
+/// and replication protocol operations.
 pub struct PGConnection {
     conn: *mut PGconn,
 }

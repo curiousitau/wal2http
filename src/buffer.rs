@@ -1,7 +1,16 @@
+//! Binary buffer handling utilities
+//!
+//! Provides safe, position-aware reading and writing of binary data for
+//! PostgreSQL protocol message handling. These utilities handle network
+//! byte order conversion and bounds checking.
+
 use crate::errors::{ReplicationError, ReplicationResult};
 use crate::utils::{buf_recv_i16, buf_recv_i32, buf_recv_i64, buf_recv_u32, buf_recv_u64};
 
-/// A buffer reader that manages position and provides meaningful parsing methods
+/// Buffer reader for parsing binary protocol messages
+///
+/// Provides position-aware reading with bounds checking for safely parsing
+/// PostgreSQL's binary replication protocol data.
 #[derive(Debug)]
 pub struct BufferReader<'a> {
     buffer: &'a [u8],
@@ -196,8 +205,10 @@ impl<'a> BufferReader<'a> {
     }
 }
 
-/// A buffer writer that manages position and provides meaningful writing methods
-/// for constructing binary messages with automatic position tracking
+/// Buffer writer for constructing binary protocol messages
+///
+/// Provides position-aware writing with bounds checking for safely creating
+/// PostgreSQL protocol messages with proper network byte order.
 #[derive(Debug)]
 pub struct BufferWriter<'a> {
     buffer: &'a mut [u8],
