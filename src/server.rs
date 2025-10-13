@@ -411,15 +411,13 @@ impl ReplicationServer {
         if let Some(ref event_sink) = self.event_sink {
             debug!("Sending event to event sink: {:?}", message);
 
-            // Process event sequentially - wait for successful delivery before continuing
-            match event_sink.send_event(&message).await {
+                match event_sink.send_event(&message).await {
                 Ok(()) => {
                     debug!(
                         "Successfully sent event to sink for LSN: {:x}",
                         self.state.received_lsn
                     );
-                    // Only update applied LSN after successful event delivery
-                    self.state.update_applied_lsn(self.state.received_lsn);
+                      self.state.update_applied_lsn(self.state.received_lsn);
                 }
                 Err(e) => {
                     error!("Failed to send event to event sink: {}", e);
@@ -430,8 +428,7 @@ impl ReplicationServer {
                 }
             }
         } else {
-            // No event sink configured, so we can consider this immediately "applied"
-            self.state.update_applied_lsn(self.state.received_lsn);
+              self.state.update_applied_lsn(self.state.received_lsn);
         }
 
         // self.print_replication_message(message)?;
@@ -444,16 +441,16 @@ impl ReplicationServer {
 
         let now = SystemTime::now();
         let timestamp = system_time_to_postgres_timestamp(now);
-        let mut reply_buf = [0u8; 34]; // 1 + 8 + 8 + 8 + 8 + 1
+        let mut reply_buf = [0u8; 34];
         let bytes_written = {
             let mut writer = BufferWriter::new(&mut reply_buf);
 
             writer.write_u8(b'r')?;
-            writer.write_u8(0)?; // Don't request reply
             writer.write_u64(self.state.received_lsn)?;
             writer.write_u64(self.state.received_lsn)?;
             writer.write_u64(self.state.applied_lsn)?;
             writer.write_i64(timestamp)?;
+            writer.write_u8(0)?;
 
             writer.bytes_written()
         };
@@ -466,7 +463,7 @@ impl ReplicationServer {
 
         self.connection.put_copy_data(&reply_buf)?;
 
-        debug!(
+          debug!(
             "Sent feedback with received LSN: {:x}, applied LSN: {:x}",
             self.state.received_lsn, self.state.applied_lsn
         );

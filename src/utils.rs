@@ -16,10 +16,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const PG_EPOCH_OFFSET_SECS: i64 = 946_684_800; // Seconds from Unix epoch (1970) to PostgreSQL epoch (2000)
 
 // Type aliases matching PostgreSQL internal types
-pub type XLogRecPtr = u64; // WAL location pointer
-pub type Xid = u32; // Transaction ID
-pub type Oid = u32; // Object ID
-pub type TimestampTz = i64; // Timestamp with timezone
+pub type XLogRecPtr = u64;     // WAL location pointer
+pub type Xid = u32;            // Transaction ID
+pub type Oid = u32;            // Object ID
+pub type TimestampTz = i64;    // Timestamp with timezone
 
 pub const INVALID_XLOG_REC_PTR: XLogRecPtr = 0;
 

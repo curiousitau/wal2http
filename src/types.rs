@@ -15,8 +15,8 @@ use crate::{
     errors::ReplicationError,
     utils::{Oid, Xid},
 };
-use serde::Serialize; // For JSON serialization
-use std::collections::HashMap; // For storing relation information by OID
+use serde::Serialize;           // For JSON serialization
+use std::collections::HashMap;  // For storing relation information by OID
 
 /// Information about a table column
 ///
@@ -141,7 +141,9 @@ pub enum ReplicationMessage {
     /// Provides metadata about a table that will be referenced by
     /// subsequent Insert/Update/Delete messages. Sent once per table
     /// when first referenced in a replication session.
-    Relation { relation: RelationInfo },
+    Relation {
+        relation: RelationInfo,
+    },
 
     /// Row insertion message
     ///
@@ -193,7 +195,10 @@ pub enum ReplicationMessage {
     ///
     /// Marks the beginning of a large transaction that will be streamed
     /// incrementally rather than waiting for completion.
-    StreamStart { xid: Xid, first_segment: bool },
+    StreamStart {
+        xid: Xid,
+        first_segment: bool,
+    },
 
     /// End of streaming segment message
     ///
@@ -215,7 +220,10 @@ pub enum ReplicationMessage {
     /// Streaming transaction abort message
     ///
     /// Indicates that a streaming transaction was rolled back.
-    StreamAbort { xid: Xid, subtransaction_xid: Xid },
+    StreamAbort {
+        xid: Xid,
+        subtransaction_xid: Xid,
+    },
 }
 
 /// State for managing logical replication
