@@ -58,6 +58,13 @@ pub enum ReplicationError {
     /// Missing required environment variable, includes the name of the missing variable
     #[error("Missing required environment variable: {0}")]
     MissingEnvVar(String),
+
+    /// Sink-related errors
+    #[error("Sink error: {message}")]
+    Sink {
+        message: String,
+        sink: String,
+    },
 }
 
 /// Result type alias for convenience
