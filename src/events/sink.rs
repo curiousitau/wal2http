@@ -30,7 +30,8 @@ impl EventSinkRegistry {
                     let http_config = http::HttpEventSinkConfig {
                         endpoint_url: url.clone(),
                     };
-                    let sink = http::HttpEventSink::new(http_config);
+                    let sink = http::HttpEventSink::new(http_config)
+                        .map_err(|e| crate::core::errors::ReplicationError::config(e))?;
                     Ok(std::sync::Arc::new(sink) as std::sync::Arc<dyn EventSink + Send + Sync>)
                 } else {
                     Err(crate::core::errors::ReplicationError::config(

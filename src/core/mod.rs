@@ -4,8 +4,10 @@
 //! including configuration management, error handling, and common types.
 
 pub mod config;
+pub mod email_config;
 pub mod errors;
 
 // Re-export for convenience
 pub use config::ReplicationConfig;
+pub use email_config::EmailConfig;
 pub use errors::{ReplicationError, ReplicationResult};
