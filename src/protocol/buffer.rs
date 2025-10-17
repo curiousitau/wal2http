@@ -4,8 +4,8 @@
 //! PostgreSQL protocol message handling. These utilities handle network
 //! byte order conversion and bounds checking.
 
-use crate::errors::{ReplicationError, ReplicationResult};
-use crate::utils::{buf_recv_i16, buf_recv_i32, buf_recv_i64, buf_recv_u32, buf_recv_u64};
+use crate::core::errors::{ReplicationError, ReplicationResult};
+use crate::utils::binary::{buf_recv_i16, buf_recv_i32, buf_recv_i64, buf_recv_u32, buf_recv_u64};
 
 /// Buffer reader for parsing binary protocol messages
 ///
@@ -253,7 +253,7 @@ impl<'a> BufferWriter<'a> {
         if !self.has_space(8) {
             return Err(ReplicationError::parse("Not enough space for u64"));
         }
-        crate::utils::buf_send_u64(value, &mut self.buffer[self.position..]);
+        crate::utils::binary::buf_send_u64(value, &mut self.buffer[self.position..]);
         self.position += 8;
         Ok(())
     }
@@ -263,7 +263,7 @@ impl<'a> BufferWriter<'a> {
         if !self.has_space(8) {
             return Err(ReplicationError::parse("Not enough space for i64"));
         }
-        crate::utils::buf_send_i64(value, &mut self.buffer[self.position..]);
+        crate::utils::binary::buf_send_i64(value, &mut self.buffer[self.position..]);
         self.position += 8;
         Ok(())
     }
@@ -286,7 +286,7 @@ impl<'a> BufferWriter<'a> {
         if !self.has_space(4) {
             return Err(ReplicationError::parse("Not enough space for u32"));
         }
-        crate::utils::buf_send_u32(xmin, &mut self.buffer[self.position..]);
+        crate::utils::binary::buf_send_u32(xmin, &mut self.buffer[self.position..]);
         self.position += 4;
         Ok(())
     }
