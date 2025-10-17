@@ -17,6 +17,16 @@ impl<'a> BufferReader<'a> {
         }
     }
 
+    /// Private helper to read exactly `len` bytes with a custom error message
+    fn read_exact(&mut self, len: usize, err_msg: &str) -> Result<&[u8]> {
+        if !self.has_bytes(len) {
+            return Err(ReplicationError::parse(err_msg));
+        }
+        let slice = &self.buffer[self.position..self.position + len];
+        self.position += len;
+        Ok(slice)
+    }
+
     /// Get current position in the buffer
     pub fn position(&self) -> usize {
         self.position
@@ -138,15 +148,8 @@ impl<'a> BufferReader<'a> {
         }
 
         let length = length as usize;
-        if !self.has_bytes(length) {
-            return Err(ReplicationError::parse("String data truncated"));
-        }
-
-        let string_bytes = &self.buffer[self.position..self.position + length];
-        let string_value = String::from_utf8_lossy(string_bytes).into_owned();
-
-        self.position += length;
-        Ok(string_value)
+        let string_bytes = self.read_exact(length, "String data truncated")?;
+        Ok(String::from_utf8_lossy(string_bytes).into_owned())
     }
 
     /// Read a length-prefixed byte vector (32-bit length followed by data)
@@ -157,14 +160,19 @@ impl<'a> BufferReader<'a> {
             return Err(ReplicationError::parse("Negative byte array length"));
         }
 
-        let length = length as usize;
-        if !self.has_bytes(length) {
-            return Err(ReplicationError::parse("Byte array data truncated"));
+        // Check for integer overflow when converting to usize
+        let length_usize = length as usize;
+        if length_usize > i32::MAX as usize {
+            return Err(ReplicationError::parse("Byte array length exceeds safe maximum"));
         }
 
-        let bytes = self.buffer[self.position..self.position + length].to_vec();
-        self.position += length;
-        Ok(bytes)
+        // Check for reasonable maximum to prevent excessive memory allocation
+        const MAX_SAFE_LENGTH: usize = 10 * 1024 * 1024; // 10MB
+        if length_usize > MAX_SAFE_LENGTH {
+            return Err(ReplicationError::parse("Byte array length exceeds maximum allowed size"));
+        }
+
+        Ok(self.read_exact(length_usize, "Byte array data truncated")?.to_vec())
     }
 
     /// Read all remaining bytes as a new buffer
@@ -224,6 +232,14 @@ impl<'a> BufferWriter<'a> {
             buffer,
             position: 0,
         }
+    }
+
+    /// Private helper to reserve space for `len` bytes with a custom error message
+    fn reserve(&mut self, len: usize, err_msg: &str) -> Result<()> {
+        if !self.has_space(len) {
+            return Err(ReplicationError::parse(err_msg));
+        }
+        Ok(())
     }
 
     /// Get remaining space in the buffer
@@ -293,12 +309,16 @@ impl<'a> BufferWriter<'a> {
     /// Write a length-prefixed string (32-bit length followed by data)
     pub fn write_length_prefixed_string(&mut self, value: &str) -> Result<()> {
         let bytes = value.as_bytes();
-        let length = bytes.len() as i32;
 
-        if !self.has_space(4 + length as usize) {
-            return Err(ReplicationError::parse("Not enough space for length-prefixed string"));
+        // Check that bytes.len() does not exceed i32::MAX before casting
+        if bytes.len() > i32::MAX as usize {
+            return Err(ReplicationError::parse("String length exceeds i32::MAX"));
         }
 
+        let length = bytes.len() as i32;
+        let total_space = 4 + bytes.len();
+
+        self.reserve(total_space, "Not enough space for length-prefixed string")?;
         self.write_i32(length)?;
         self.buffer[self.position..self.position + bytes.len()].copy_from_slice(bytes);
         self.position += bytes.len();
@@ -307,10 +327,7 @@ impl<'a> BufferWriter<'a> {
 
     /// Write raw bytes
     pub fn write_bytes(&mut self, bytes: &[u8]) -> Result<()> {
-        if !self.has_space(bytes.len()) {
-            return Err(ReplicationError::parse("Not enough space for bytes"));
-        }
-
+        self.reserve(bytes.len(), "Not enough space for bytes")?;
         self.buffer[self.position..self.position + bytes.len()].copy_from_slice(bytes);
         self.position += bytes.len();
         Ok(())
