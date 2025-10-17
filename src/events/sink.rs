@@ -50,7 +50,8 @@ impl EventSinkRegistry {
                         application_id: app_id,
                         api_token: api_token.to_string(),
                     };
-                    let sink = hook0::Hook0EventSink::new(hook0_config);
+                    let sink = hook0::Hook0EventSink::new(hook0_config)
+                        .map_err(|e| crate::core::errors::ReplicationError::config(e))?;
                     Ok(std::sync::Arc::new(sink) as std::sync::Arc<dyn EventSink + Send + Sync>)
                 } else {
                     Err(crate::core::errors::ReplicationError::config(
