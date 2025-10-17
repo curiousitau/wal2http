@@ -370,7 +370,8 @@ impl ReplicationConfig {
             if !service_lower.is_empty()
                 && service_lower != "http"
                 && service_lower != "hook0"
-                && service_lower != "stdout" {
+                && service_lower != "stdout"
+            {
                 return Err(crate::errors::ReplicationError::config(
                     "Event sink must be one of: 'http', 'hook0', or 'stdout'",
                 ));
