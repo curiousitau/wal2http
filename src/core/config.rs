@@ -6,6 +6,7 @@
 
 use std::env;
 use uuid::Uuid;
+use super::{ReplicationError, ReplicationResult};
 
 /// Configuration for the replication checker with validation
 #[derive(Debug, Clone)]
@@ -43,10 +44,10 @@ impl ReplicationConfig {
     /// - `HOOK0_API_URL`: Hook0 API URL (required when using "hook0")
     /// - `HOOK0_APPLICATION_ID`: Hook0 application UUID (required when using "hook0")
     /// - `HOOK0_API_TOKEN`: Hook0 API token (required when using "hook0")
-    pub fn from_env() -> crate::errors::ReplicationResult<Self> {
+    pub fn from_env() -> ReplicationResult<Self> {
         // Required: Database connection string
         let connection_string = env::var("DATABASE_URL")
-            .map_err(|_| crate::errors::ReplicationError::config(
+            .map_err(|_| ReplicationError::config(
                 "Missing required DATABASE_URL environment variable"
             ))?;
 
@@ -90,24 +91,24 @@ impl ReplicationConfig {
         hook0_api_url: Option<String>,
         hook0_application_id: Option<Uuid>,
         hook0_api_token: Option<String>,
-    ) -> crate::errors::ReplicationResult<Self> {
+    ) -> ReplicationResult<Self> {
         // Validate connection string
         if connection_string.trim().is_empty() {
-            return Err(crate::errors::ReplicationError::config(
+            return Err(ReplicationError::config(
                 "DATABASE_URL cannot be empty",
             ));
         }
 
         // Validate publication name
         if publication_name.trim().is_empty() {
-            return Err(crate::errors::ReplicationError::config(
+            return Err(ReplicationError::config(
                 "Publication name cannot be empty",
             ));
         }
 
         // Validate slot name format (PostgreSQL naming rules)
         if slot_name.trim().is_empty() {
-            return Err(crate::errors::ReplicationError::config(
+            return Err(ReplicationError::config(
                 "Slot name cannot be empty",
             ));
         }
@@ -116,14 +117,14 @@ impl ReplicationConfig {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '_')
         {
-            return Err(crate::errors::ReplicationError::config(
+            return Err(ReplicationError::config(
                 "Slot name can only contain alphanumeric characters and underscores",
             ));
         }
 
         if slot_name.len() > 63 {
             // PostgreSQL identifier length limit
-            return Err(crate::errors::ReplicationError::config(
+            return Err(ReplicationError::config(
                 "Slot name cannot be longer than 63 characters",
             ));
         }
@@ -136,7 +137,7 @@ impl ReplicationConfig {
                 "http" => {
                     // HTTP endpoint URL is required for HTTP sink
                     if http_endpoint_url.is_none() || http_endpoint_url.as_ref().unwrap().trim().is_empty() {
-                        return Err(crate::errors::ReplicationError::config(
+                        return Err(ReplicationError::config(
                             "HTTP_ENDPOINT_URL is required when using 'http' event sink"
                         ));
                     }
@@ -144,7 +145,7 @@ impl ReplicationConfig {
                     // Validate HTTP endpoint URL format
                     let url = http_endpoint_url.as_ref().unwrap();
                     if !url.starts_with("http://") && !url.starts_with("https://") {
-                        return Err(crate::errors::ReplicationError::config(
+                        return Err(ReplicationError::config(
                             "HTTP_ENDPOINT_URL must start with http:// or https://"
                         ));
                     }
@@ -152,19 +153,19 @@ impl ReplicationConfig {
                 "hook0" => {
                     // All Hook0 fields are required for Hook0 sink
                     if hook0_api_url.is_none() || hook0_api_url.as_ref().unwrap().trim().is_empty() {
-                        return Err(crate::errors::ReplicationError::config(
+                        return Err(ReplicationError::config(
                             "HOOK0_API_URL is required when using 'hook0' event sink"
                         ));
                     }
 
                     if hook0_application_id.is_none() {
-                        return Err(crate::errors::ReplicationError::config(
+                        return Err(ReplicationError::config(
                             "HOOK0_APPLICATION_ID is required when using 'hook0' event sink"
                         ));
                     }
 
                     if hook0_api_token.is_none() || hook0_api_token.as_ref().unwrap().trim().is_empty() {
-                        return Err(crate::errors::ReplicationError::config(
+                        return Err(ReplicationError::config(
                             "HOOK0_API_TOKEN is required when using 'hook0' event sink"
                         ));
                     }
@@ -172,7 +173,7 @@ impl ReplicationConfig {
                     // Validate Hook0 API URL format
                     let url = hook0_api_url.as_ref().unwrap();
                     if !url.starts_with("http://") && !url.starts_with("https://") {
-                        return Err(crate::errors::ReplicationError::config(
+                        return Err(ReplicationError::config(
                             "HOOK0_API_URL must start with http:// or https://"
                         ));
                     }
@@ -181,7 +182,7 @@ impl ReplicationConfig {
                     // STDOUT sink requires no additional configuration
                 }
                 _ => {
-                    return Err(crate::errors::ReplicationError::config(
+                    return Err(ReplicationError::config(
                         "EVENT_SINK must be one of: 'http', 'hook0', or 'stdout'"
                     ));
                 }
@@ -202,12 +203,11 @@ impl ReplicationConfig {
     }
 
     /// Get the event sink type with proper default handling
-    pub fn event_sink_type(&self) -> &str {
+    pub fn event_sink_type(&self) -> String {
         self.event_sink
             .as_deref()
             .unwrap_or("stdout")
             .to_lowercase()
-            .as_str()
     }
 
     /// Check if this configuration uses the HTTP event sink

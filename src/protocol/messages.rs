@@ -243,6 +243,11 @@ impl ReplicationState {
             self.applied_lsn = std::cmp::max(self.applied_lsn, lsn);
         }
     }
+
+    /// Updates the last feedback time to current time
+    pub fn update_feedback_time(&mut self) {
+        self.last_feedback_time = std::time::Instant::now();
+    }
 }
 
 impl Default for ReplicationState {

@@ -11,7 +11,7 @@ pub mod sink;
 pub mod processors;
 
 // Re-export for convenience
-pub use sink::{EventSink, EventSinkRegistry};
+pub use sink::EventSinkRegistry;
 pub use processors::*;
 
 /// EventSink trait for common event sending functionality

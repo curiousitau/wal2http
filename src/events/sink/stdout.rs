@@ -6,6 +6,7 @@
 use async_trait::async_trait;
 use crate::core::errors::ReplicationResult;
 use crate::protocol::messages::ReplicationMessage;
+use super::super::EventSink;
 
 /// Event sink that writes events to standard output
 pub struct StdoutEventSink {}
@@ -24,7 +25,7 @@ impl Default for StdoutEventSink {
 }
 
 #[async_trait]
-impl super::EventSink for StdoutEventSink {
+impl EventSink for StdoutEventSink {
     async fn send_event(&self, event: &ReplicationMessage) -> ReplicationResult<()> {
         println!("{:?}", event);
         Ok(())
