@@ -9,4 +9,3 @@ pub mod state;
 
 // Re-export for convenience
 pub use server::ReplicationServer;
-pub use state::ReplicationState;

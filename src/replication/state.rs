@@ -3,9 +3,6 @@
 //! Provides state tracking for PostgreSQL logical replication connections,
 //! including schema information, LSN positions, and feedback timing.
 
-use std::collections::HashMap;
-use crate::protocol::messages::RelationInfo;
-use crate::utils::binary::Oid;
 
 // Re-export the ReplicationState from protocol messages for convenience
 pub use crate::protocol::messages::ReplicationState;

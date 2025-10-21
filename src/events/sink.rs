@@ -4,8 +4,6 @@
 //! to different destinations including HTTP endpoints, Hook0, and STDOUT.
 
 use crate::core::errors::ReplicationResult;
-use crate::protocol::messages::ReplicationMessage;
-use async_trait::async_trait;
 use super::EventSink;
 
 pub mod event_formatter;

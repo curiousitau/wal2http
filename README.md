@@ -89,7 +89,7 @@ export SLOT_NAME="my_slot"
 export PUB_NAME="my_publication"
 
 # Run the replication checker
-./target/release/wal2http
+./target/release/walpipe
 ```
 
 ### Event Sink Examples
@@ -102,7 +102,7 @@ export HTTP_ENDPOINT_URL="https://your-webhook-endpoint.com/events"
 export SLOT_NAME="my_slot"
 export PUB_NAME="my_publication"
 
-./target/release/wal2http
+./target/release/walpipe
 ```
 
 #### Hook0 Event Sink
@@ -115,7 +115,7 @@ export HOOK0_API_TOKEN="your-api-token"
 export SLOT_NAME="my_slot"
 export PUB_NAME="my_publication"
 
-./target/release/wal2http
+./target/release/walpipe
 ```
 
 #### STDOUT Event Sink (Default)
@@ -127,7 +127,7 @@ export PUB_NAME="my_publication"
 # Or explicitly set:
 export EVENT_SINK="stdout"
 
-./target/release/wal2http
+./target/release/walpipe
 ```
 
 ### Command Line Arguments
@@ -217,12 +217,12 @@ The implementation consists of several key modules:
 
 ## Message Flow Sequence Diagram
 
-The following sequence diagram shows the interaction between PostgreSQL and wal2http during logical replication:
+The following sequence diagram shows the interaction between PostgreSQL and walpipe during logical replication:
 
 ```mermaid
 sequenceDiagram
     participant PG as PostgreSQL
-    participant WAL2 as wal2http
+    participant WAL2 as walpipe
     participant SINK as Event Sink (HTTP/Hook0/Stdout)
 
     Note over PG,WAL2: Connection Setup Phase

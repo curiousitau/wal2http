@@ -1,4 +1,4 @@
-# Multi-stage build for wal2http Rust project
+# Multi-stage build for walpipe Rust project
 # Build stage: Install dependencies and build the project
 FROM rust:1.89-trixie AS builder
 
@@ -35,8 +35,8 @@ RUN apt-get update && apt-get install -y \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Copy built binary from build stage
-COPY --from=builder /build/target/release/wal2http /usr/local/bin/wal2http
+COPY --from=builder /build/target/release/walpipe /usr/local/bin/walpipe
 
 # Set entrypoint
-ENTRYPOINT ["/usr/local/bin/wal2http"]
+ENTRYPOINT ["/usr/local/bin/walpipe"]
 

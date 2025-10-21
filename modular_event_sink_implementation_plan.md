@@ -2,7 +2,7 @@
 
 ## 1. Introduction
 
-This document outlines the implementation plan for creating a modular event sink system in the `wal2http` project.
+This document outlines the implementation plan for creating a modular event sink system in the `walpipe` project.
 
 **Status: ✅ COMPLETED**
 
@@ -332,4 +332,4 @@ The modular event sink system has been **successfully implemented** with the fol
 - **Comprehensive Documentation**: Architecture, implementation, and usage guides
 - **Examples**: Configuration examples and setup instructions
 
-The implementation provides a robust, extensible foundation for event processing in the wal2http PostgreSQL replication system while maintaining reliability and performance.
+The implementation provides a robust, extensible foundation for event processing in the walpipe PostgreSQL replication system while maintaining reliability and performance.

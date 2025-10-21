@@ -4,7 +4,7 @@ This document describes the `EVENT_SINK` environment variable that allows you to
 
 ## Overview
 
-The wal2http service supports three types of event sinks:
+The walpipe service supports three types of event sinks:
 
 1. **HTTP** - Sends events to a generic HTTP endpoint
 2. **Hook0** - Sends events to a Hook0 event management service

@@ -30,16 +30,14 @@ mod events;        // Event processing and sinks
 mod utils;         // Utility functions for PostgreSQL integration
 
 // Import the core types and functionality we need
-use crate::core::{ReplicationConfig, ReplicationError, ReplicationResult};
+use crate::core::{ReplicationConfig, ReplicationResult};
 use crate::replication::ReplicationServer;
 use clap::Parser;
-use std::env;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, fmt};
 
-use uuid::Uuid;
 
 /// Command line arguments structure using clap for parsing
 ///
@@ -49,7 +47,7 @@ use uuid::Uuid;
 /// containerization and security.
 #[derive(Parser, Debug)]
 #[command(
-    name = "wal2http",
+    name = "walpipe",
     about = "PostgreSQL Logical Replication Checker in Rust",
     version = "0.1.0"
 )]

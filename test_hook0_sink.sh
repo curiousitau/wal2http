@@ -28,7 +28,7 @@ sleep 2
 
 # Run the replication checker with Hook0 sink enabled
 echo "Starting replication checker with Hook0 sink..."
-cd backends/wal2http
+cd backends/walpipe
 cargo run -- \
   --hook0-api-url=http://localhost:8081/events \
   --hook0-application-id=123e4567-e89b-12d3-a456-426614174000 \
