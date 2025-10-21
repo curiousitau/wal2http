@@ -21,11 +21,11 @@ pub struct EventSinkRegistry;
 impl EventSinkRegistry {
     /// Create an event sink based on configuration
     pub fn create_sink(
-        sink_type: &str,
+        sink_type: &crate::core::config::EventSinkType,
         config: &crate::core::config::ReplicationConfig,
     ) -> ReplicationResult<std::sync::Arc<dyn EventSink + Send + Sync>> {
-        match sink_type.to_lowercase().as_str() {
-            "http" => {
+        match sink_type {
+            crate::core::config::EventSinkType::Http => {
                 if let Some(ref url) = config.http_endpoint_url {
                     let http_config = http::HttpEventSinkConfig {
                         endpoint_url: url.clone(),
@@ -39,7 +39,7 @@ impl EventSinkRegistry {
                     ))
                 }
             }
-            "hook0" => {
+            crate::core::config::EventSinkType::Hook0 => {
                 if let (Some(ref api_url), Some(app_id), Some(ref api_token)) = (
                     config.hook0_api_url.as_ref(),
                     config.hook0_application_id,
@@ -59,8 +59,7 @@ impl EventSinkRegistry {
                     ))
                 }
             }
-            "stdout" | _ => {
-                // Default to stdout for unknown or empty sink type
+            crate::core::config::EventSinkType::Stdout => {
                 let sink = stdout::StdoutEventSink {};
                 Ok(std::sync::Arc::new(sink) as std::sync::Arc<dyn EventSink + Send + Sync>)
             }

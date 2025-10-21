@@ -6,12 +6,12 @@
 //! - WAL streaming and message processing
 //! - Event delivery to configured sinks
 
-use crate::protocol::buffer::{BufferReader, BufferWriter};
+use crate::core::config::ReplicationConfig;
 use crate::core::errors::ReplicationResult;
+use crate::events::{EventSink, EventSinkRegistry};
+use crate::protocol::buffer::{BufferReader, BufferWriter};
 use crate::protocol::messages::*;
 use crate::protocol::parser::MessageParser;
-use crate::core::config::ReplicationConfig;
-use crate::events::{EventSink, EventSinkRegistry};
 use crate::utils::connection::PGConnection;
 use crate::utils::timestamp::system_time_to_postgres_timestamp;
 use libpq_sys::ExecStatusType;
@@ -47,28 +47,19 @@ impl ReplicationServer {
         info!("Successfully connected to database server");
 
         // Configure event sink based on configuration
-        let event_sink = match config.event_sink.as_deref() {
-            Some("hook0") | Some("http") | Some("stdout") | None => {
-                let sink_type = config.event_sink_type();
-                info!("Initializing {} event sink", sink_type);
+        let sink_type = config.event_sink_type();
+        info!("Initializing {} event sink", sink_type);
 
-                match EventSinkRegistry::create_sink(&sink_type, &config) {
-                    Ok(sink) => {
-                        info!("Successfully initialized {} event sink", sink_type);
-                        Some(sink)
-                    }
-                    Err(e) => {
-                        error!("Failed to initialize {} event sink: {}", sink_type, e);
-                        return Err(crate::core::errors::ReplicationError::protocol(e.to_string()));
-                    }
-                }
+        let event_sink = match EventSinkRegistry::create_sink(sink_type, &config) {
+            Ok(sink) => {
+                info!("Successfully initialized {} event sink", sink_type);
+                Some(sink)
             }
-            Some(sink_type) => {
-                error!("Unsupported event sink: {}", sink_type);
-                return Err(crate::core::errors::ReplicationError::protocol(format!(
-                    "Unsupported event sink: {}",
-                    sink_type
-                )));
+            Err(e) => {
+                error!("Failed to initialize {} event sink: {}", sink_type, e);
+                return Err(crate::core::errors::ReplicationError::protocol(
+                    e.to_string(),
+                ));
             }
         };
 

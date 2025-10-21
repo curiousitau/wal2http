@@ -4,9 +4,26 @@
 //! It provides a centralized way to manage all application settings
 //! with proper validation and default values.
 
+use super::{ReplicationError, ReplicationResult};
 use std::env;
 use uuid::Uuid;
-use super::{ReplicationError, ReplicationResult};
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventSinkType {
+    Http,
+    Hook0,
+    Stdout,
+}
+
+impl std::fmt::Display for EventSinkType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EventSinkType::Http => write!(f, "http"),
+            EventSinkType::Hook0 => write!(f, "hook0"),
+            EventSinkType::Stdout => write!(f, "stdout"),
+        }
+    }
+}
 
 /// Configuration for the replication checker with validation
 #[derive(Debug, Clone)]
@@ -15,7 +32,7 @@ pub struct ReplicationConfig {
     pub publication_name: String,
     pub slot_name: String,
     pub feedback_interval_secs: u64,
-    pub event_sink: Option<String>,
+    pub event_sink: EventSinkType,
     pub http_endpoint_url: Option<String>,
     pub hook0_api_url: Option<String>,
     pub hook0_application_id: Option<Uuid>,
@@ -46,10 +63,9 @@ impl ReplicationConfig {
     /// - `HOOK0_API_TOKEN`: Hook0 API token (required when using "hook0")
     pub fn from_env() -> ReplicationResult<Self> {
         // Required: Database connection string
-        let connection_string = env::var("DATABASE_URL")
-            .map_err(|_| ReplicationError::config(
-                "Missing required DATABASE_URL environment variable"
-            ))?;
+        let connection_string = env::var("DATABASE_URL").map_err(|_| {
+            ReplicationError::config("Missing required DATABASE_URL environment variable")
+        })?;
 
         // Optional with defaults: replication settings
         let slot_name = env::var("SLOT_NAME").unwrap_or_else(|_| "sub".to_string());
@@ -94,23 +110,17 @@ impl ReplicationConfig {
     ) -> ReplicationResult<Self> {
         // Validate connection string
         if connection_string.trim().is_empty() {
-            return Err(ReplicationError::config(
-                "DATABASE_URL cannot be empty",
-            ));
+            return Err(ReplicationError::config("DATABASE_URL cannot be empty"));
         }
 
         // Validate publication name
         if publication_name.trim().is_empty() {
-            return Err(ReplicationError::config(
-                "Publication name cannot be empty",
-            ));
+            return Err(ReplicationError::config("Publication name cannot be empty"));
         }
 
         // Validate slot name format (PostgreSQL naming rules)
         if slot_name.trim().is_empty() {
-            return Err(ReplicationError::config(
-                "Slot name cannot be empty",
-            ));
+            return Err(ReplicationError::config("Slot name cannot be empty"));
         }
 
         if !slot_name
@@ -130,71 +140,81 @@ impl ReplicationConfig {
         }
 
         // Validate event sink configuration
-        if let Some(ref service) = event_sink {
-            let service_lower = service.to_lowercase();
 
-            match service_lower.as_str() {
-                "http" => {
-                    // HTTP endpoint URL is required for HTTP sink
-                    if http_endpoint_url.is_none() || http_endpoint_url.as_ref().unwrap().trim().is_empty() {
-                        return Err(ReplicationError::config(
-                            "HTTP_ENDPOINT_URL is required when using 'http' event sink"
-                        ));
-                    }
+        let event_sink_val: Result<EventSinkType, ReplicationError> = match event_sink.as_ref() {
+            Some(service) => {
+                let service_lower = service.to_lowercase();
 
-                    // Validate HTTP endpoint URL format
-                    let url = http_endpoint_url.as_ref().unwrap();
-                    if !url.starts_with("http://") && !url.starts_with("https://") {
-                        return Err(ReplicationError::config(
-                            "HTTP_ENDPOINT_URL must start with http:// or https://"
-                        ));
+                match service_lower.as_str() {
+                    "http" => {
+                        // HTTP endpoint URL is required for HTTP sink
+                        if http_endpoint_url.is_none()
+                            || http_endpoint_url.as_ref().unwrap().trim().is_empty()
+                        {
+                            Err(ReplicationError::config(
+                                "HTTP_ENDPOINT_URL is required when using 'http' event sink",
+                            ))
+                        } else {
+                            // Validate HTTP endpoint URL format
+                            let url = http_endpoint_url.as_ref().unwrap();
+                            if !url.starts_with("http://") && !url.starts_with("https://") {
+                                Err(ReplicationError::config(
+                                    "HTTP_ENDPOINT_URL must start with http:// or https://",
+                                ))
+                            } else {
+                                Ok(EventSinkType::Http)
+                            }
+                        }
                     }
-                }
-                "hook0" => {
-                    // All Hook0 fields are required for Hook0 sink
-                    if hook0_api_url.is_none() || hook0_api_url.as_ref().unwrap().trim().is_empty() {
-                        return Err(ReplicationError::config(
-                            "HOOK0_API_URL is required when using 'hook0' event sink"
-                        ));
+                    "hook0" => {
+                        // All Hook0 fields are required for Hook0 sink
+                        if hook0_api_url.is_none() || hook0_api_url.as_ref().unwrap().trim().is_empty()
+                        {
+                            Err(ReplicationError::config(
+                                "HOOK0_API_URL is required when using 'hook0' event sink",
+                            ))
+                        } else if hook0_application_id.is_none() {
+                            Err(ReplicationError::config(
+                                "HOOK0_APPLICATION_ID is required when using 'hook0' event sink",
+                            ))
+                        } else if hook0_api_token.is_none()
+                            || hook0_api_token.as_ref().unwrap().trim().is_empty()
+                        {
+                            Err(ReplicationError::config(
+                                "HOOK0_API_TOKEN is required when using 'hook0' event sink",
+                            ))
+                        } else {
+                            // Validate Hook0 API URL format
+                            let url = hook0_api_url.as_ref().unwrap();
+                            if !url.starts_with("http://") && !url.starts_with("https://") {
+                                Err(ReplicationError::config(
+                                    "HOOK0_API_URL must start with http:// or https://",
+                                ))
+                            } else {
+                                Ok(EventSinkType::Hook0)
+                            }
+                        }
                     }
-
-                    if hook0_application_id.is_none() {
-                        return Err(ReplicationError::config(
-                            "HOOK0_APPLICATION_ID is required when using 'hook0' event sink"
-                        ));
+                    "stdout" => {
+                        // STDOUT sink requires no additional configuration
+                        Ok(EventSinkType::Stdout)
                     }
-
-                    if hook0_api_token.is_none() || hook0_api_token.as_ref().unwrap().trim().is_empty() {
-                        return Err(ReplicationError::config(
-                            "HOOK0_API_TOKEN is required when using 'hook0' event sink"
-                        ));
-                    }
-
-                    // Validate Hook0 API URL format
-                    let url = hook0_api_url.as_ref().unwrap();
-                    if !url.starts_with("http://") && !url.starts_with("https://") {
-                        return Err(ReplicationError::config(
-                            "HOOK0_API_URL must start with http:// or https://"
-                        ));
-                    }
-                }
-                "stdout" | "" => {
-                    // STDOUT sink requires no additional configuration
-                }
-                _ => {
-                    return Err(ReplicationError::config(
-                        "EVENT_SINK must be one of: 'http', 'hook0', or 'stdout'"
-                    ));
+                    _ => Err(ReplicationError::config(
+                        "EVENT_SINK must be one of: 'http', 'hook0', or 'stdout'",
+                    )),
                 }
             }
-        }
+            None => Err(ReplicationError::config(
+                "EVENT_SINK must be one of: 'http', 'hook0', or 'stdout'",
+            ))
+        };
 
         Ok(Self {
             connection_string,
             publication_name,
             slot_name,
             feedback_interval_secs: 1, // Send feedback every second
-            event_sink,
+            event_sink: event_sink_val?,
             http_endpoint_url,
             hook0_api_url,
             hook0_application_id,
@@ -203,26 +223,23 @@ impl ReplicationConfig {
     }
 
     /// Get the event sink type with proper default handling
-    pub fn event_sink_type(&self) -> String {
-        self.event_sink
-            .as_deref()
-            .unwrap_or("stdout")
-            .to_lowercase()
+    pub fn event_sink_type(&self) -> &EventSinkType {
+        &self.event_sink
     }
 
     /// Check if this configuration uses the HTTP event sink
     pub fn uses_http_sink(&self) -> bool {
-        self.event_sink_type() == "http"
+        self.event_sink_type() == &EventSinkType::Http
     }
 
     /// Check if this configuration uses the Hook0 event sink
     pub fn uses_hook0_sink(&self) -> bool {
-        self.event_sink_type() == "hook0"
+        self.event_sink_type() == &EventSinkType::Hook0
     }
 
     /// Check if this configuration uses the STDOUT event sink
     pub fn uses_stdout_sink(&self) -> bool {
-        self.event_sink_type() == "stdout"
+        self.event_sink_type() == &EventSinkType::Stdout
     }
 }
 
@@ -266,7 +283,12 @@ mod tests {
 
         let result = ReplicationConfig::from_env();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("HTTP_ENDPOINT_URL"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("HTTP_ENDPOINT_URL")
+        );
 
         // Clean up
         env::remove_var("DATABASE_URL");
